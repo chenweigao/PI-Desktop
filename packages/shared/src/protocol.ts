@@ -276,6 +276,13 @@ export const IPC = {
      * crosses this channel.
      */
     remoteHostBootstrap: "pi-desktop/remoteHost/bootstrap",
+    /**
+     * Register a Perch native-agent host reached over SSH. No pairing token or
+     * bundle install: the bridge token is discovered from the remote
+     * endpoint.json at connect time and never crosses this channel. The record
+     * carries `metadata.backend: "perch"` so the boot orchestrates it as HTTP.
+     */
+    remoteHostAddPerch: "pi-desktop/remoteHost/addPerch",
     remoteHostReconnect: "pi-desktop/remoteHost/reconnect",
     remoteHostProjects: "pi-desktop/remoteHost/projects",
     remoteHostBrowseProjects: "pi-desktop/remoteHost/browseProjects",

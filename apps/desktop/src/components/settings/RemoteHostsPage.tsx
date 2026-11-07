@@ -52,6 +52,8 @@ type SshForm = {
   identityFile: string;
   auth: RemoteHostSshAuth;
   password: string;
+  /** "pi-host" installs+pairs a RACP host; "perch" registers a Perch bridge. */
+  backend: "pi-host" | "perch";
 };
 
 const EMPTY_SSH_FORM: SshForm = {
@@ -62,6 +64,7 @@ const EMPTY_SSH_FORM: SshForm = {
   identityFile: "",
   auth: "key",
   password: "",
+  backend: "pi-host",
 };
 
 export function RemoteHostsPage() {
@@ -218,17 +221,33 @@ export function RemoteHostsPage() {
         // Empty optional fields are dropped rather than sent blank, so main
         // falls back to the SSH config and the local user name. A password
         // replaces the key, so no `-i` is sent alongside it.
-        const result = await api.bootstrapRemoteHost({
-          label,
-          host,
-          ...(user ? { user } : {}),
-          ...(port ? { port: Number(port) } : {}),
-          ...(!passwordMode && identityFile ? { identityFile } : {}),
-          ...(passwordMode && password ? { password } : {}),
-        });
-        showToast(t("settings.remoteHosts.sshSucceeded", { label: result.host.label }), {
-          variant: "info",
-        });
+        if (sshForm.backend === "perch") {
+          // A Perch bridge needs no bundle install or pairing token: the
+          // token is discovered from the remote endpoint.json at connect time.
+          const result = await api.addPerchRemoteHost({
+            label,
+            host,
+            ...(user ? { user } : {}),
+            ...(port ? { port: Number(port) } : {}),
+            ...(!passwordMode && identityFile ? { identityFile } : {}),
+            ...(passwordMode && password ? { password } : {}),
+          });
+          showToast(t("settings.remoteHosts.sshSucceeded", { label: result.host.label }), {
+            variant: "info",
+          });
+        } else {
+          const result = await api.bootstrapRemoteHost({
+            label,
+            host,
+            ...(user ? { user } : {}),
+            ...(port ? { port: Number(port) } : {}),
+            ...(!passwordMode && identityFile ? { identityFile } : {}),
+            ...(passwordMode && password ? { password } : {}),
+          });
+          showToast(t("settings.remoteHosts.sshSucceeded", { label: result.host.label }), {
+            variant: "info",
+          });
+        }
         closeAddForm();
         await refresh();
       } catch (caught) {
@@ -456,6 +475,25 @@ export function RemoteHostsPage() {
                       disabled={installing}
                     />
                   </Field>
+                </div>
+
+                <div className="settings-remote-host-form-auth">
+                  <div
+                    className="text-sm text-text-secondary"
+                    id="settings-remote-host-backend-label"
+                  >
+                    {t("settings.remoteHosts.sshBackend")}
+                  </div>
+                  <SegmentedControl
+                    value={sshForm.backend}
+                    onChange={(backend) => setSshForm((prev) => ({ ...prev, backend }))}
+                    options={[
+                      { value: "pi-host", label: t("settings.remoteHosts.backendPiHost") },
+                      { value: "perch", label: t("settings.remoteHosts.backendPerch") },
+                    ]}
+                    label={t("settings.remoteHosts.sshBackend")}
+                    disabled={installing}
+                  />
                 </div>
 
                 <div className="settings-remote-host-form-auth">

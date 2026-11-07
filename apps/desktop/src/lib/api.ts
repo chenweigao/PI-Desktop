@@ -2108,6 +2108,10 @@ export const api = {
    */
   bootstrapRemoteHost: (request: RemoteHostBootstrapRequest) =>
     invoke<RemoteHostBootstrapResult>(IPC.invoke.remoteHostBootstrap, request),
+  /** Register a Perch native-agent host over SSH; the bridge token is
+   * discovered from the remote endpoint.json, never pasted here. */
+  addPerchRemoteHost: (request: { host: string; label: string; user?: string; port?: number; identityFile?: string; password?: string }) =>
+    invoke<{ host: RemoteHostSummary }>(IPC.invoke.remoteHostAddPerch, request),
   /** Close and drop a paired host by its stable routing key. */
   removeRemoteHost: (hostKey: string) =>
     invoke<{ ok: true }>(IPC.invoke.remoteHostRemove, { hostKey }),

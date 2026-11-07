@@ -151,6 +151,42 @@ export function registerRemoteHostIpc(options: RegisterRemoteHostIpcOptions): vo
   );
 
   registrar.handle(
+    IPC.invoke.remoteHostAddPerch,
+    async (request: {
+      host: string; label: string; user?: string; port?: number; identityFile?: string; password?: string;
+    }): Promise<{ host: RemoteHostSummary }> => {
+      const boot = requireBoot(getRemoteHostsBoot());
+      const host = trim(request?.host);
+      const label = trim(request?.label) || host;
+      if (!host) throw invalid("host is required", "host");
+      const hostKey = synthesizeHostKey(host, label);
+      if (hostKey.includes(":")) throw invalid("hostKey must not contain ':'", "hostKey");
+      // No pairing token and no bundle install: the bridge token is read from
+      // the remote endpoint.json over SSH at connect time. The record marks
+      // `metadata.backend: "perch"` so the boot orchestrates it as HTTP.
+      const summary = await boot.addHost({
+        hostKey,
+        label,
+        url: `perch+ssh://${host}`,
+        deviceToken: "",
+        ...(request?.password ? { sshSecret: request.password } : {}),
+        metadata: {
+          transport: "ssh",
+          backend: "perch",
+          ssh: {
+            host,
+            remotePort: 1,
+            ...(request?.user ? { user: request.user } : {}),
+            ...(request?.port ? { port: request.port } : {}),
+            ...(request?.identityFile ? { identityFile: request.identityFile } : {}),
+          },
+        },
+      });
+      return { host: summary };
+    },
+  );
+
+  registrar.handle(
     IPC.invoke.remoteHostRemove,
     async (request: RemoteHostRemoveRequest): Promise<{ ok: true }> => {
       const boot = requireBoot(getRemoteHostsBoot());
