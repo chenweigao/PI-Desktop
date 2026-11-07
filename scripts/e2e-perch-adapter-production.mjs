@@ -14,7 +14,7 @@
  * Run: node scripts/e2e-perch-adapter-production.mjs --endpoint <ep.json> --workspace <dir> --evidence <dir>
  */
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { register } from "node:module";
 register(new URL("../apps/desktop/test/helpers/ts-import-hooks.mjs", import.meta.url));
@@ -22,7 +22,6 @@ register(new URL("../apps/desktop/test/helpers/ts-import-hooks.mjs", import.meta
 const { IPC } = await import("@pi-desktop/shared");
 const { createBackendRouter, makeRemoteSessionId } = await import("../apps/desktop/electron/main/remote/backend-router.ts");
 const { createPerchHost } = await import("../apps/desktop/electron/main/remote/perch/perch-host.ts");
-const { createPerchEventBridge } = await import("../apps/desktop/electron/main/remote/perch/perch-event-bridge.ts");
 
 const args = process.argv.slice(2);
 const opt = (n) => { const i = args.indexOf(`--${n}`); return i >= 0 ? args[i + 1] : undefined; };
@@ -33,8 +32,37 @@ const endpoint = JSON.parse(await readFile(endpointPath, "utf8"));
 const log = []; const note = (s, d) => { log.push({ step: s, at: new Date().toISOString(), data: d }); console.log(`· ${s}`); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/* ---- a Perch host bound to a fake "SSH" that is actually local (the bridge
-   is already isolated+local; the SSH layer is exercised separately). ---- */
+/* The bridge under test is isolated and loopback-local, so the "SSH" layer is
+ * a minimal stand-in: exec returns the endpoint descriptor, forward opens a
+ * real local TCP pass-through to the bridge port (not a stub — the adapter's
+ * HTTP still flows through the forward it created). Real system-SSH coverage
+ * lives in test/perch-real-ssh.test.mjs. */
+import { createServer, connect } from "node:net";
+function localForwardTransport() {
+  const servers = new Set();
+  return {
+    exec: async () => ({ stdout: JSON.stringify(endpoint), stderr: "", code: 0 }),
+    execWithInput: async () => ({ stdout: "", stderr: "", code: 0 }),
+    forward: async ({ localPort, remotePort }) => {
+      const server = createServer((socket) => {
+        const upstream = connect({ host: "127.0.0.1", port: endpoint.port });
+        socket.pipe(upstream).pipe(socket);
+      });
+      servers.add(server);
+      await new Promise((resolveListen, rejectListen) => {
+        server.once("error", rejectListen);
+        server.listen(localPort, "127.0.0.1", resolveListen);
+      });
+      return {
+        localPort,
+        close: async () => { servers.delete(server); await new Promise((r) => server.close(r)); },
+      };
+    },
+    dispose: () => { for (const server of servers) server.close(); servers.clear(); },
+  };
+}
+
+/* ---- a Perch host bound to the pass-through transport ---- */
 const events = [];
 const router = createBackendRouter();
 const fakeTunnels = {
@@ -46,12 +74,7 @@ const host = createPerchHost({
   hostKey: "dev", label: "Perch test", router, tunnels: fakeTunnels,
   ssh: { host: "127.0.0.1", remotePort: endpoint.port },
   emit: (channel, payload) => events.push({ channel, payload }),
-  buildTransport: () => ({
-    exec: async () => ({ stdout: JSON.stringify(endpoint), stderr: "", code: 0 }),
-    execWithInput: async () => ({ stdout: "", stderr: "", code: 0 }),
-    forward: async () => { throw new Error("n/a"); },
-    dispose: () => {},
-  }),
+  buildTransport: localForwardTransport,
   pollMs: { busy: 300, idle: 1200 },
 });
 await host.connect();
@@ -126,8 +149,8 @@ await route(IPC.invoke.agentPrompt, { sessionId: remoteId(sid), content: `Create
 const approvalB = await openApprovalAfter(sid, denyMark);
 await route(IPC.invoke.toolResolvePermission, { requestId: approvalB.requestId, decision: "deny" });
 note("deny.sent", {});
-// The denied turn ends without the tool running.
-await waitEvent((e, i) => i >= denyMark && e.channel === IPC.event.agentMessage && e.payload?.sessionId === remoteId(sid) && e.payload?.event?.type === "agent_end", "denied turn end", 120_000).catch(() => null);
+// The denied turn must end — a missing agent_end fails the test, never skipped.
+await waitEvent((e, i) => i >= denyMark && e.channel === IPC.event.agentMessage && e.payload?.sessionId === remoteId(sid) && e.payload?.event?.type === "agent_end", "denied turn end", 120_000);
 await sleep(2000);
 const existsB = await readFile(join(workspace, markerB), "utf8").then(() => true, () => false);
 assert.equal(existsB, false, "denied tool never created the file");
@@ -139,7 +162,7 @@ await route(IPC.invoke.agentPrompt, { sessionId: remoteId(sid), content: "Run `s
 // Approve the sleep so the turn is genuinely running (not stuck pre-approval).
 const cancelApproval = await openApprovalAfter(sid, cancelMark);
 await route(IPC.invoke.toolResolvePermission, { requestId: cancelApproval.requestId, decision: "allow-once" });
-await waitEvent((e, i) => i >= cancelMark && e.channel === IPC.event.agentMessage && e.payload?.sessionId === remoteId(sid) && e.payload?.event?.type === "agent_start", "agent_start for cancel", 90_000).catch(() => null);
+await waitEvent((e, i) => i >= cancelMark && e.channel === IPC.event.agentMessage && e.payload?.sessionId === remoteId(sid) && e.payload?.event?.type === "agent_start", "agent_start for cancel", 90_000);
 // Give the tool a beat to start the sleep.
 await sleep(1000);
 const aborted = await route(IPC.invoke.agentAbort, { sessionId: remoteId(sid) });
@@ -157,37 +180,37 @@ await (async () => {
 note("cancel.ok", {});
 
 /* ============ 4. client gone: remote continues, fresh read recovers ============ */
+// The marker content must NOT appear in the prompt text, so finding it in the
+// recovered history proves the remote really executed while we were gone.
 const markerD = `prod-d-${Date.now()}.txt`;
-// One bash command does everything (create + sleep), so a single approval
-// covers the whole turn and no second approval is needed while we are gone.
+const offlineToken = `offline-${Math.random().toString(36).slice(2, 10)}`;
 const offlineMark = events.length;
-await route(IPC.invoke.agentPrompt, { sessionId: remoteId(sid), content: `Run exactly one bash command: printf 'offline-done' > ${markerD} && sleep 4. Then confirm the file content.` });
+await route(IPC.invoke.agentPrompt, { sessionId: remoteId(sid), content: `Run exactly one bash command: printf '${offlineToken}' > ${markerD} && sleep 4. Then confirm you created the file.` });
 const approvalD = await openApprovalAfter(sid, offlineMark);
 await route(IPC.invoke.toolResolvePermission, { requestId: approvalD.requestId, decision: "allow-once" });
 // Confirm the turn is running (the sleep is in flight), then the client goes
 // away entirely: stop this host (poller + router). The bridge keeps running.
-await waitEvent((e, i) => i >= offlineMark && e.channel === IPC.event.agentMessage && e.payload?.sessionId === remoteId(sid) && e.payload?.event?.type === "agent_start", "offline turn started", 60_000).catch(() => null);
+await waitEvent((e, i) => i >= offlineMark && e.channel === IPC.event.agentMessage && e.payload?.sessionId === remoteId(sid) && e.payload?.event?.type === "agent_start", "offline turn started", 60_000);
+const goneAt = Date.now();
 await host.close();
-note("client.gone", {});
-await sleep(5000);
+note("client.gone", { goneAt });
+await sleep(6000);
 // A fresh host re-discovers and reads the settled history without re-prompting.
 const events2 = [];
 const host2 = createPerchHost({
   hostKey: "dev", label: "Perch test", router, tunnels: fakeTunnels,
   ssh: { host: "127.0.0.1", remotePort: endpoint.port },
   emit: (c, p) => events2.push({ channel: c, payload: p }),
-  buildTransport: () => ({
-    exec: async () => ({ stdout: JSON.stringify(endpoint), stderr: "", code: 0 }),
-    execWithInput: async () => ({ stdout: "", stderr: "", code: 0 }),
-    forward: async () => { throw new Error("n/a"); }, dispose: () => {},
-  }),
+  buildTransport: localForwardTransport,
   pollMs: { busy: 300, idle: 1200 },
 });
 await host2.connect();
-const recovered = await waitSnapshot(sid, (s) => JSON.stringify(s.messages).includes("offline-done"), "recovered history carries offline work", 90_000);
+const recovered = await waitSnapshot(sid, (s) => JSON.stringify(s.messages).includes(offlineToken), "recovered history carries offline work", 90_000);
 const onDiskD = await readFile(join(workspace, markerD), "utf8");
-assert.equal(onDiskD.trim(), "offline-done", "remote completed while the client was fully closed");
-note("recovered", { messages: recovered.messages.length });
+assert.equal(onDiskD.trim(), offlineToken, "remote completed while the client was fully closed");
+const statD = await stat(join(workspace, markerD));
+assert.ok(statD.mtimeMs >= goneAt - 1000, `file written after the client left (mtime ${statD.mtimeMs} >= ${goneAt})`);
+note("recovered", { messages: recovered.messages.length, fileMtime: statD.mtimeMs, goneAt });
 await host2.close();
 
 await writeFile(join(evidence, "perch-adapter-production.json"), JSON.stringify({ at: new Date().toISOString(), sid, workspace, log }, null, 2));

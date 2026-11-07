@@ -69,18 +69,21 @@ function fail(message: string, errorCode: string): PerchBridgeError {
  * direct read of `endpoint.json`. Both are loopback-local on the remote.
  */
 export async function discoverPerchEndpoint(exec: PerchSshExec): Promise<PerchEndpoint> {
-  const roots = [
-    "$HOME/.local/share/agent-workbench/native",
-  ];
-  for (const root of roots) {
-    const script = [
-      `if [ -x "${root}/native-agent-service.py" ] || [ -f "${root}/native-agent-service.py" ]; then`,
-      `  (cd "${root}" && python3 native-agent-service.py --ensure 2>/dev/null) || cat "${root}/endpoint.json" 2>/dev/null`,
-      `else cat "${root}/endpoint.json" 2>/dev/null; fi`,
-    ].join("; ");
-    const result = await exec(script, { timeoutMs: 30_000 });
-    const text = result.stdout.trim();
-    if (!text) continue;
+  // A single POSIX script, newline-separated: `join("; ")` on an if/then
+  // produces `then;`, which is a syntax error in every POSIX shell (the Codex
+  // review reproduced this with `bash -n`). Newlines are safe through the
+  // system ssh exec channel.
+  const script = [
+    `root="$HOME/.local/share/agent-workbench/native"`,
+    `if [ -f "$root/native-agent-service.py" ]; then`,
+    `  ( cd "$root" && python3 native-agent-service.py --ensure 2>/dev/null ) || cat "$root/endpoint.json" 2>/dev/null`,
+    `else`,
+    `  cat "$root/endpoint.json" 2>/dev/null`,
+    `fi`,
+  ].join("\n");
+  const result = await exec(script, { timeoutMs: 30_000 });
+  const text = result.stdout.trim();
+  if (text) {
     // `--ensure` may print diagnostics before the JSON line; take the last
     // brace-delimited line that parses and carries both port and token.
     for (const line of text.split(/\r?\n/).reverse()) {

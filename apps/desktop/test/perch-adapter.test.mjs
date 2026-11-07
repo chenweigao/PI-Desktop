@@ -294,3 +294,134 @@ test("sessionGet returns a renderer-ready SessionDetail with UiMessage transcrip
   assert.ok(Array.isArray(detail.messages));
   await new Promise((r) => bridge.server.close(r));
 });
+
+/* ---- Codex review c4823fe75 regression coverage ---- */
+
+test("endpoint discovery builds valid POSIX shell (bash -n accepts it)", async () => {
+  const { discoverPerchEndpoint } = await import("../electron/main/remote/perch/perch-client.ts");
+  const { spawnSync } = await import("node:child_process");
+  let captured = "";
+  await assert.rejects(discoverPerchEndpoint(async (command) => {
+    captured = command;
+    const check = spawnSync("bash", ["-n"], { input: command, encoding: "utf8" });
+    assert.equal(check.status, 0, `discovery script must parse: ${check.stderr}`);
+    return { stdout: "", stderr: "", code: 0 };
+  }), /PERCH_ENDPOINT_UNAVAILABLE|discover/);
+  assert.ok(captured.includes("endpoint.json"));
+});
+
+test("allow-once without a single-use option refuses instead of escalating", async () => {
+  const bridge = await startBridge();
+  bridge.interactions.push({ id: "sel-2", method: "select", title: "Allow tool: bash\nCommand: ls",
+    options: ["Approve bash for this session", "Deny"] });
+  const backend = createPerchBackend({ hostKey: "dev", client: clientFor(bridge) });
+  const sessionId = makeRemoteSessionId("dev", "s1");
+  await assert.rejects(
+    backend.invoke(IPC.invoke.toolResolvePermission, [{ requestId: makeRemoteApprovalRequestId(sessionId, "sel-2"), decision: "allow-once" }]),
+    /no option matching|refusing to guess/i,
+  );
+  assert.equal(bridge.answers.length, 0, "no escalation reached the bridge");
+  await new Promise((r) => bridge.server.close(r));
+});
+
+test("an unknown decision is rejected, not treated as allow", async () => {
+  const bridge = await startBridge();
+  bridge.interactions.push({ id: "sel-3", method: "select", title: "Allow tool: bash\nCommand: ls",
+    options: ["Approve", "Approve bash for this session", "Deny"] });
+  const backend = createPerchBackend({ hostKey: "dev", client: clientFor(bridge) });
+  const sessionId = makeRemoteSessionId("dev", "s1");
+  await assert.rejects(
+    backend.invoke(IPC.invoke.toolResolvePermission, [{ requestId: makeRemoteApprovalRequestId(sessionId, "sel-3"), decision: "definitely" }]),
+    /unknown permission decision/i,
+  );
+  assert.equal(bridge.answers.length, 0);
+  await new Promise((r) => bridge.server.close(r));
+});
+
+test("failed turns emit a TURN_FAILED error (never a bare agent_end)", () => {
+  const emitted = [];
+  const bridge = createPerchEventBridge({ hostKey: "dev", emit: (c, p) => emitted.push(p) });
+  bridge.applySnapshot("s1", { busy: true, turnId: "t1", revision: 5, messages: [] });
+  bridge.applySnapshot("s1", { busy: false, turnId: "t1", turnState: "failed", error: "model failed", revision: 6, messages: [] });
+  const types = emitted.filter((e) => e.event).map((e) => ({ type: e.event.type, code: e.event.error?.code, turnId: e.turnId }));
+  assert.deepEqual(types, [
+    { type: "agent_start", code: undefined, turnId: "t1" },
+    { type: "error", code: "TURN_FAILED", turnId: "t1" },
+  ]);
+});
+
+test("stopped and unknown turns report their real outcome", () => {
+  const emitted = [];
+  const bridge = createPerchEventBridge({ hostKey: "dev", emit: (c, p) => emitted.push(p) });
+  bridge.applySnapshot("s1", { busy: true, turnId: "t2", revision: 1, messages: [] });
+  bridge.applySnapshot("s1", { busy: false, turnId: "t2", turnState: "stopped", revision: 2, messages: [] });
+  bridge.applySnapshot("s1", { busy: true, turnId: "t3", revision: 3, messages: [] });
+  bridge.applySnapshot("s1", { busy: false, turnId: "t3", turnState: "unknown", error: "托管服务曾中断", revision: 4, messages: [] });
+  const codes = emitted.filter((e) => e.event?.type === "error").map((e) => e.event.error.code);
+  assert.deepEqual(codes, ["TURN_ABORTED", "TURN_UNKNOWN"]);
+  assert.equal(emitted.filter((e) => e.event?.type === "agent_end").length, 0, "no fake completion");
+});
+
+test("multi-tool messages keep every call correlated with its result", async () => {
+  const { perchMessageToUiMessages } = await import("../electron/main/remote/perch/perch-event-bridge.ts");
+  const rows = perchMessageToUiMessages({ id: "m1", role: "assistant", created_at: "2026-01-01T00:00:00Z", content: [
+    { type: "text", text: "two tools" },
+    { type: "tool_use", tool_call_id: "t1", tool_name: "bash", input: { command: "ls" } },
+    { type: "tool_use", tool_call_id: "t2", tool_name: "read", input: { path: "/x" } },
+    { type: "tool_result", tool_call_id: "t1", output: "ok" },
+  ] }, false);
+  assert.equal(rows.length, 3, "assistant row + both tool rows");
+  assert.equal(rows[0].role, "assistant");
+  assert.equal(rows[0].content, "two tools");
+  const t1 = rows.find((r) => r.toolCallId === "t1");
+  const t2 = rows.find((r) => r.toolCallId === "t2");
+  assert.equal(t1.toolStatus, "success");
+  assert.equal(t1.content, "ok");
+  assert.equal(t2.toolName, "read");
+  assert.equal(t2.toolStatus, undefined, "a settled tool_use without result is not a spinner");
+  assert.notEqual(t2.status, "streaming");
+});
+
+test("a bridge restart (revision moving backwards) resets diff state", () => {
+  const emitted = [];
+  const bridge = createPerchEventBridge({ hostKey: "dev", emit: (c, p) => emitted.push(p) });
+  bridge.applySnapshot("s1", { busy: true, revision: 10, messages: [{ id: "a", role: "assistant", content: [{ type: "text", text: "hi" }] }] });
+  emitted.length = 0;
+  // Service restarted: revision restarts from a low number.
+  bridge.applySnapshot("s1", { busy: false, revision: 1, turnState: "completed", messages: [{ id: "a", role: "assistant", content: [{ type: "text", text: "hi" }] }] });
+  const starts = emitted.filter((e) => e.event?.type === "message_start");
+  assert.equal(starts.length, 1, "message re-emitted fresh after restart, not diffed against the dead epoch");
+});
+
+test("history paging walks backwards with epoch-checked cursors", async () => {
+  const bridge = await startBridge();
+  // Extend the fake bridge with paged history semantics.
+  const pages = { "": { messages: [{ id: "m3", role: "assistant", content: [{ type: "text", text: "newest" }] }], history: { epoch: "e1", start: 2, total: 3, end: 3 } },
+    "2": { messages: [{ id: "m1", role: "user", content: [{ type: "text", text: "older" }] }], history: { epoch: "e1", start: 0, total: 3, end: 2 } } };
+  const origHandler = bridge.server.listeners("request")[0];
+  bridge.server.removeAllListeners("request");
+  bridge.server.on("request", (req, res) => {
+    const url = new URL(req.url, "http://x");
+    if (req.method === "GET" && url.pathname === "/sessions/s1" && url.searchParams.has("turns")) {
+      const before = url.searchParams.get("before") ?? "";
+      const epoch = url.searchParams.get("epoch");
+      if (before && epoch !== "e1") {
+        res.writeHead(400, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ error: "History changed; reopen the conversation" }));
+      }
+      const page = pages[before] ?? pages[""];
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ id: "s1", title: "paged", busy: false, updated: 1, ...page }));
+    }
+    origHandler(req, res);
+  });
+  const backend = createPerchBackend({ hostKey: "dev", client: clientFor(bridge) });
+  const sessionId = makeRemoteSessionId("dev", "s1");
+  const first = (await backend.invoke(IPC.invoke.sessionGet, [{ id: sessionId }])).session;
+  assert.equal(first.messages.at(-1).id, "m3");
+  assert.equal(first.hasMoreBefore, true);
+  const second = (await backend.invoke(IPC.invoke.sessionGet, [{ id: sessionId, messageBefore: first.messageStart }])).session;
+  assert.equal(second.messages[0].content, "older");
+  assert.equal(second.hasMoreBefore, false);
+  await new Promise((r) => bridge.server.close(r));
+});

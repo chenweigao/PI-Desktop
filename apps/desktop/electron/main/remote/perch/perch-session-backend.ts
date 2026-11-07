@@ -20,7 +20,10 @@ import type { RemoteBackend } from "../backend-router.js";
 import { parseRemoteSessionId, parseRemoteApprovalRequestId } from "../backend-router.js";
 import type { PerchClient, PerchReceipt, PerchSessionSummary } from "./perch-client.js";
 import { asReceipt, PerchBridgeError } from "./perch-client.js";
-import { perchMessageToUi } from "./perch-event-bridge.js";
+import { perchMessageToUiMessages, type PerchMessage } from "./perch-event-bridge.js";
+
+/** PI renderer history paging: virtual cursors mapped to Perch `turns/before/epoch`. */
+type PerchHistoryCursor = { hostSessionId: string; before: number; epoch: string };
 
 export type PerchBackendOptions = {
   hostKey: string;
@@ -63,6 +66,9 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
   const { client } = options;
   const newRequestId = options.newRequestId ?? (() => globalThis.crypto.randomUUID());
   const log = options.log ?? (() => undefined);
+  // Process-wide virtual cursor space; avoids reusing a cursor across hosts.
+  let nextHistoryCursor = 2 ** 48;
+  const historyCursors = new Map<number, PerchHistoryCursor>();
 
   const snapshot = (hostSessionId: string) =>
     client.get(`/sessions/${encodeURIComponent(hostSessionId)}`) as Promise<Record<string, unknown>>;
@@ -78,17 +84,28 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
    * before returning: the bridge dedupes on requestId, so the original
    * submission — if it landed — is returned instead of a duplicate prompt.
    */
-  const submitPrompt = async (hostSessionId: string, text: string): Promise<PerchReceipt> => {
-    const requestId = newRequestId();
+  const submitPrompt = async (hostSessionId: string, text: string, idempotencyKey?: string): Promise<PerchReceipt> => {
+    const requestId = idempotencyKey ?? newRequestId();
     try {
       return asReceipt(await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/prompt`, { requestId, text }));
     } catch (error) {
       if (error instanceof PerchBridgeError && error.errorCode === "HOST_DISCONNECTED") {
         // The response may have been lost after the bridge accepted the turn.
-        const receipt = asReceipt(await client.get(
-          `/sessions/${encodeURIComponent(hostSessionId)}/requests/${encodeURIComponent(requestId)}`,
-        ));
-        if (receipt.status !== "notFound") return receipt;
+        try {
+          const receipt = asReceipt(await client.get(
+            `/sessions/${encodeURIComponent(hostSessionId)}/requests/${encodeURIComponent(requestId)}`,
+          ));
+          if (receipt.status !== "notFound") return receipt;
+        } catch (lookupError) {
+          // Tunnel still down: report an honest unknown outcome. The requestId
+          // travels with the error so a later retry with the same idempotency
+          // key stays idempotent instead of double-executing.
+          log("warn", "perch prompt outcome unknown; receipt unreadable", { requestId, error: String(lookupError) });
+          throw Object.assign(
+            new Error("prompt outcome unknown after a connection drop; the request was not resent"),
+            { errorCode: "HOST_DISCONNECTED", details: { requestId } },
+          );
+        }
       }
       throw error;
     }
@@ -97,8 +114,8 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
   const invoke = async (channel: string, args: readonly unknown[]): Promise<unknown> => {
     switch (channel) {
       case IPC.invoke.agentPrompt: {
-        const req = args[0] as { sessionId: string; content: string };
-        const receipt = await submitPrompt(hostIdFor(args), req.content);
+        const req = args[0] as { sessionId: string; content: string; idempotencyKey?: string };
+        const receipt = await submitPrompt(hostIdFor(args), req.content, req.idempotencyKey);
         return { accepted: receipt.status !== "failed", turnId: receipt.id };
       }
       case IPC.invoke.agentGetStatus: {
@@ -128,14 +145,46 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
       }
       case IPC.invoke.sessionGet: {
         const hostSessionId = hostIdFor(args);
-        const remoteSessionId = ((): string => {
-          const first = args[0];
-          const id = typeof first === "string" ? first : (first as { id?: string })?.id ?? (first as { sessionId?: string })?.sessionId;
-          return typeof id === "string" ? id : "";
-        })();
-        const snap = (await snapshot(hostSessionId)) as PerchSessionSummary;
+        const input = (typeof args[0] === "object" ? args[0] : {}) as {
+          id?: string; sessionId?: string; messageBefore?: number; messageLimit?: number;
+        };
+        const remoteSessionId = input.id ?? input.sessionId ?? "";
+        // Paged read: Perch pages by user-prompt turns (`turns`, capped per
+        // page) with `before`+`epoch` walking backwards; PI cursors are
+        // virtual numbers mapped onto a Perch (before, epoch) pair. An epoch
+        // mismatch makes the bridge answer 400 → surfaced as an expired
+        // cursor, and the renderer reopens the conversation instead of
+        // splicing two histories.
+        const limit = Number.isFinite(input.messageLimit)
+          ? Math.max(1, Math.min(100, Math.floor(input.messageLimit!))) : 50;
+        const query: Record<string, string | number | undefined> = { turns: Math.max(1, Math.ceil(limit / 4)) };
+        if (input.messageBefore !== undefined) {
+          const cursor = historyCursors.get(input.messageBefore);
+          if (!cursor || cursor.hostSessionId !== hostSessionId) {
+            throw Object.assign(new Error("remote history cursor expired; reopen the conversation"), { errorCode: "INVALID_ARGUMENT" });
+          }
+          query.before = cursor.before;
+          query.epoch = cursor.epoch;
+        }
+        let snap: PerchSessionSummary;
+        try {
+          snap = (await client.get(`/sessions/${encodeURIComponent(hostSessionId)}`, query)) as PerchSessionSummary;
+        } catch (error) {
+          if (error instanceof PerchBridgeError && /history changed/i.test(error.message)) {
+            throw Object.assign(new Error("remote history changed; reopen the conversation"), { errorCode: "INVALID_ARGUMENT" });
+          }
+          throw error;
+        }
         const busy = snap.busy === true;
-        const messages = (snap.messages ?? []).map((m) => perchMessageToUi(m as never, busy));
+        const messages = (snap.messages ?? []).flatMap((m) => perchMessageToUiMessages(m as PerchMessage, busy));
+        const history = snap.history;
+        let messageStart = 0;
+        const hasMoreBefore = history ? history.start > 0 : false;
+        if (hasMoreBefore && history) {
+          messageStart = nextHistoryCursor--;
+          historyCursors.set(messageStart, { hostSessionId, before: history.start, epoch: history.epoch });
+          while (historyCursors.size > 1024) historyCursors.delete(historyCursors.keys().next().value!);
+        }
         return {
           session: {
             id: remoteSessionId,
@@ -144,12 +193,16 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
             title: snap.title,
             messageCount: messages.length,
             messages,
-            mode: "code",
+            mode: "agent",
             permissionMode: "ask",
-            thinkingLevel: "default",
+            thinkingLevel: "off",
             updatedAt: new Date((snap.updated ?? 0) * 1000).toISOString(),
             createdAt: new Date((snap.updated ?? 0) * 1000).toISOString(),
             capabilities: { canPrompt: true, canStop: true, canRefresh: true, canConfigureModel: false },
+            messageStart,
+            messageEnd: messages.length,
+            hasMoreBefore,
+            hasMoreAfter: false,
           },
         };
       }
@@ -177,19 +230,35 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
         if (target.method === "confirm") {
           body.allow = resolution.decision === "allow-once" || resolution.decision === "allow";
         } else if (target.method === "select") {
-          // Map the user's explicit decision onto the OMP select options
-          // (e.g. "Approve" / "Approve bash for this session" / "Deny").
-          // Never default to the first option and never upgrade a plain allow
-          // into a session-scoped grant unless the user asked for it.
+          // Map the user's explicit decision onto the OMP select options by
+          // exact semantics. Three separate scopes must never blur:
+          //  - deny           → the option that refuses (default Deny / Reject)
+          //  - allow-session  → the option explicitly scoped to the session
+          //  - allow-once     → a single-use option ONLY; when the runtime did
+          //    not offer one, refuse instead of escalating the user's grant
+          //    to a session-scoped approval.
           const options = (target as { options?: string[] }).options ?? [];
-          const pick = (re: RegExp) => options.find((o) => re.test(o));
-          const value = resolution.decision === "deny"
-            ? pick(/deny|reject|拒绝/i)
-            : resolution.decision === "allow-session"
-              ? (pick(/for this session|this session|会话/i) ?? pick(/approve|allow|允许/i))
-              : (pick(/^approve$|^allow$|^允许$/i) ?? pick(/approve|allow|允许(?!.*session)/i));
+          const lower = options.map((o) => o.toLowerCase());
+          const isSessionScoped = (i: number) => /session|会话/.test(lower[i]);
+          const isDeny = (i: number) => /^(deny|reject|拒绝)$/.test(lower[i]) || /deny|reject|拒绝/.test(lower[i]);
+          const isApprove = (i: number) => /approve|allow|允许|批准/.test(lower[i]);
+          let value: string | undefined;
+          if (resolution.decision === "deny") {
+            value = options.find((_, i) => isDeny(i));
+          } else if (resolution.decision === "allow-session") {
+            value = options.find((_, i) => isApprove(i) && isSessionScoped(i));
+          } else if (resolution.decision === "allow-once") {
+            // Exact single-use verbs first ("Approve", "Allow"), never an
+            // option whose label widens the grant to the session.
+            value = options.find((_, i) => /^(approve|allow|允许|批准)$/.test(lower[i]))
+              ?? options.find((_, i) => isApprove(i) && !isSessionScoped(i) && !isDeny(i));
+          } else {
+            throw invalid(`unknown permission decision "${resolution.decision}"`);
+          }
           if (!value) {
-            throw capabilityUnavailable(`no matching OMP option for decision "${resolution.decision}"`);
+            throw capabilityUnavailable(
+              `the remote approval has no option matching "${resolution.decision}"; refusing to guess`,
+            );
           }
           body.value = value;
         } else {

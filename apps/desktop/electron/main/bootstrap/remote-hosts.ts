@@ -381,10 +381,11 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
   function summaryOf(record: RemoteHostRecord): RemoteHostSummary {
     if (isPerchRecord(record)) {
       const live = openedPerch.get(record.hostKey);
-      const status: RemoteHostConnectionStatus = live ? "connected"
+      const isLive = live?.host.isConnected() === true;
+      const status: RemoteHostConnectionStatus = isLive ? "connected"
         : actionRequired.has(record.hostKey) ? "action-required" : "disconnected";
       return { hostKey: record.hostKey, label: record.label, url: record.url,
-        connected: live !== undefined, status, transport: transportOf(record) };
+        connected: isLive, status, transport: transportOf(record) };
     }
     const state = opened.get(record.hostKey)?.adapter.state();
     const status: RemoteHostConnectionStatus = state === "connected" || state === "connecting" || state === "reconnecting"
@@ -470,38 +471,56 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       return closing;
     },
     async list() { return (await registry.list()).map(summaryOf); },
-    sessionSummaries: () => catalog.summaries(),
+    sessionSummaries: () => [
+      ...catalog.summaries(),
+      // Perch sessions join the global session list from their host's cache,
+      // with remoteProjectId derived from the session cwd so the sidebar
+      // groups them like any other remote project.
+      ...[...openedPerch.values()].flatMap((entry) => entry.host.summaries()),
+    ],
     async sessions(hostKey) {
       await ensureReady(hostKey);
       const record = (await registry.list()).find((item) => item.hostKey === hostKey);
       if (record && isPerchRecord(record)) {
         const entry = openedPerch.get(hostKey);
         if (!entry) throw unavailable();
-        const list = await entry.host.sessions();
-        return list.map((session) => ({
-          id: makeRemoteSessionId(hostKey, session.id),
-          title: session.title, source: "remote" as const,
-          remoteHostKey: hostKey, remoteHostLabel: entry.label,
-          mode: "code" as SessionSummary["mode"],
-          permissionMode: (session.permissionMode ?? "ask") as SessionSummary["permissionMode"],
-          thinkingLevel: "default" as SessionSummary["thinkingLevel"],
-          messageCount: 0, updatedAt: new Date((session.updated ?? 0) * 1000).toISOString(),
-          createdAt: new Date((session.updated ?? 0) * 1000).toISOString(),
-          capabilities: { canPrompt: true, canStop: true, canRefresh: true },
-        }));
+        await entry.host.sessions();
+        return entry.host.summaries();
       }
       return catalog.sessions(hostKey);
     },
-    projects: catalog.projects,
+    async projects(hostKey) {
+      const record = (await registry.list()).find((item) => item.hostKey === hostKey);
+      if (record && isPerchRecord(record)) {
+        await ensureReady(hostKey);
+        const entry = openedPerch.get(hostKey);
+        if (!entry) throw unavailable();
+        return entry.host.projects();
+      }
+      return catalog.projects(hostKey);
+    },
     async browseProjects(hostKey, path) {
       await ensureReady(hostKey);
       const record = (await registry.list()).find((item) => item.hostKey === hostKey);
       if (record && isPerchRecord(record)) {
-        throw Object.assign(new Error("project browse is not available on a Perch host"), { errorCode: "CAPABILITY_UNAVAILABLE" });
+        const entry = openedPerch.get(hostKey);
+        if (!entry) throw unavailable();
+        return entry.host.browse(path);
       }
       return catalog.browseProjects(hostKey, path);
     },
-    registerProject: catalog.registerProject,
+    async registerProject(hostKey, path) {
+      const record = (await registry.list()).find((item) => item.hostKey === hostKey);
+      if (record && isPerchRecord(record)) {
+        // Perch has no project registry: a "project" is a session cwd. The
+        // browse validates the directory exists on the remote.
+        const entry = openedPerch.get(hostKey);
+        if (!entry) throw unavailable();
+        const directory = await entry.host.browse(path);
+        return { id: directory.path, label: directory.path.replace(/\/+$/, "").split("/").pop() ?? directory.path, archived: false, path: directory.path };
+      }
+      return catalog.registerProject(hostKey, path);
+    },
     async workspaceFiles(hostKey, input) {
       await ensureReady(hostKey);
       const host = connectedHost(hostKey);
