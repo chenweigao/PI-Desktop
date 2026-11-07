@@ -20,6 +20,7 @@ import type { RemoteBackend } from "../backend-router.js";
 import { parseRemoteSessionId, parseRemoteApprovalRequestId } from "../backend-router.js";
 import type { PerchClient, PerchReceipt, PerchSessionSummary } from "./perch-client.js";
 import { asReceipt, PerchBridgeError } from "./perch-client.js";
+import { perchMessageToUi } from "./perch-event-bridge.js";
 
 export type PerchBackendOptions = {
   hostKey: string;
@@ -127,8 +128,30 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
       }
       case IPC.invoke.sessionGet: {
         const hostSessionId = hostIdFor(args);
-        const snap = await snapshot(hostSessionId);
-        return { session: snap };
+        const remoteSessionId = ((): string => {
+          const first = args[0];
+          const id = typeof first === "string" ? first : (first as { id?: string })?.id ?? (first as { sessionId?: string })?.sessionId;
+          return typeof id === "string" ? id : "";
+        })();
+        const snap = (await snapshot(hostSessionId)) as PerchSessionSummary;
+        const busy = snap.busy === true;
+        const messages = (snap.messages ?? []).map((m) => perchMessageToUi(m as never, busy));
+        return {
+          session: {
+            id: remoteSessionId,
+            source: "remote",
+            remoteHostKey: options.hostKey,
+            title: snap.title,
+            messageCount: messages.length,
+            messages,
+            mode: "code",
+            permissionMode: "ask",
+            thinkingLevel: "default",
+            updatedAt: new Date((snap.updated ?? 0) * 1000).toISOString(),
+            createdAt: new Date((snap.updated ?? 0) * 1000).toISOString(),
+            capabilities: { canPrompt: true, canStop: true, canRefresh: true, canConfigureModel: false },
+          },
+        };
       }
       case IPC.invoke.sessionDelete: {
         const hostSessionId = hostIdFor(args);
@@ -153,8 +176,26 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
         const body: Record<string, unknown> = { id: parsed.hostApprovalId };
         if (target.method === "confirm") {
           body.allow = resolution.decision === "allow-once" || resolution.decision === "allow";
+        } else if (target.method === "select") {
+          // Map the user's explicit decision onto the OMP select options
+          // (e.g. "Approve" / "Approve bash for this session" / "Deny").
+          // Never default to the first option and never upgrade a plain allow
+          // into a session-scoped grant unless the user asked for it.
+          const options = (target as { options?: string[] }).options ?? [];
+          const pick = (re: RegExp) => options.find((o) => re.test(o));
+          const value = resolution.decision === "deny"
+            ? pick(/deny|reject|拒绝/i)
+            : resolution.decision === "allow-session"
+              ? (pick(/for this session|this session|会话/i) ?? pick(/approve|allow|允许/i))
+              : (pick(/^approve$|^allow$|^允许$/i) ?? pick(/approve|allow|允许(?!.*session)/i));
+          if (!value) {
+            throw capabilityUnavailable(`no matching OMP option for decision "${resolution.decision}"`);
+          }
+          body.value = value;
         } else {
-          body.value = resolution.value ?? resolution.decision;
+          // input/editor collect free-form content the three-button card
+          // cannot supply; fail closed rather than fabricate a value.
+          throw capabilityUnavailable(`approval method "${target.method}" is not supported by this UI`);
         }
         await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/answer`, body);
         return { ok: true };

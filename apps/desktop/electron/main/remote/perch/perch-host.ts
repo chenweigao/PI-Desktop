@@ -68,14 +68,16 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
     return { client, endpoint };
   };
 
-  async function pollOnce(): Promise<void> {
-    if (closed || !client) return;
+  async function pollOnce(): Promise<boolean> {
+    if (closed || !client) return false;
+    let anyBusy = false;
     try {
       const list = (await client.get("/sessions")) as { sessions?: PerchSessionSummary[] };
       const sessions = list.sessions ?? [];
       for (const session of sessions) {
         const hostSessionId = session.id;
         const remoteSessionId = makeRemoteSessionId(options.hostKey, hostSessionId);
+        if (session.busy || (session.pending ?? 0) > 0) anyBusy = true;
         // Register a backend the first time we see a session, so its IPC
         // routes here even before the user opens it.
         if (!lastSeenRevision.has(hostSessionId)) {
@@ -84,25 +86,28 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
           }));
           lastSeenRevision.set(hostSessionId, session.revision);
         }
-        // Skip a snapshot fetch when the list row already proves nothing moved.
-        if (session.revision === lastSeenRevision.get(hostSessionId) && !session.busy && (session.pending ?? 0) === 0) {
+        // Fetch the full snapshot whenever anything could have moved: a busy
+        // turn streams, a pending approval can resolve, and a revision bump is
+        // the only idle signal. Idle + unchanged revision skips the fetch.
+        const known = lastSeenRevision.get(hostSessionId);
+        if (!session.busy && (session.pending ?? 0) === 0 && session.revision === known) {
           continue;
         }
-        const snapshot = (await client.get(`/sessions/${encodeURIComponent(hostSessionId)}`)) as {
-          revision?: number; interactions?: never[];
-        };
+        const snapshot = (await client.get(`/sessions/${encodeURIComponent(hostSessionId)}`)) as PerchSessionSummary & { revision?: number };
+        if (snapshot.busy || (snapshot.pending ?? 0) > 0) anyBusy = true;
         lastSeenRevision.set(hostSessionId, snapshot.revision ?? session.revision);
-        bridge.applySnapshot(hostSessionId, (snapshot as { interactions?: never[] }).interactions ?? []);
+        bridge.applySnapshot(hostSessionId, snapshot as never);
       }
     } catch (error) {
       log("warn", "perch poll failed", { hostKey: options.hostKey, error: String(error) });
     }
+    return anyBusy;
   }
 
   function schedulePoll(busy: boolean): void {
     if (closed) return;
     if (pollTimer) clearTimeout(pollTimer);
-    pollTimer = setTimeout(() => { void pollOnce().finally(() => schedulePoll(false)); }, busy ? pollMs.busy : pollMs.idle);
+    pollTimer = setTimeout(() => { void pollOnce().then(schedulePoll).catch(() => schedulePoll(false)); }, busy ? pollMs.busy : pollMs.idle);
     pollTimer.unref?.();
   }
 

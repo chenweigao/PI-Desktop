@@ -158,6 +158,9 @@ export type PerchSessionSummary = {
   permissionMode?: string;
   turnId?: string | null; turnState?: string | null;
   context?: { tokens: number | null; limit: number | null } | null;
+  messages?: unknown[];
+  interactions?: unknown[];
+  history?: { epoch: string; start: number; total: number; end: number };
 };
 
 export type PerchReceipt = {
