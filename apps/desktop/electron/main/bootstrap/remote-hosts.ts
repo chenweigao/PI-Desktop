@@ -24,6 +24,8 @@ import { sshMetadataOf, sshHostRecord, transportOf } from "../remote/remote-host
 import { createRemoteSessionCatalog } from "../remote/remote-session-catalog.js";
 import { syncRemoteProviders } from "../remote/remote-provider-transfer.js";
 import { workspaceExecutionError } from "../remote/remote-workspace-outcome.js";
+import { createPerchHost, type PerchHost } from "../remote/perch/perch-host.js";
+import { createSystemSshTransport } from "../remote/ssh-transport.js";
 export { sshMetadataOf, sshHostRecord, transportOf } from "../remote/remote-host-metadata.js";
 export type { RemoteHostSummary };
 
@@ -82,6 +84,12 @@ type OpenHost = {
   hostKey: string; label: string; url: string;
   adapter: RacpRemoteHostClient; connection: RemoteHostConnection;
 };
+/** A Perch host is orchestrated separately: HTTP+SSH, not the RACP adapter. */
+type OpenPerchHost = { hostKey: string; label: string; host: PerchHost };
+
+function isPerchRecord(record: RemoteHostRecord): boolean {
+  return record.metadata?.backend === "perch";
+}
 function unavailable(): Error {
   return Object.assign(new Error("remote host is unavailable"), { errorCode: "AGENT_UNAVAILABLE" });
 }
@@ -122,6 +130,7 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
   const registry = createRemoteHostRegistry({ dataDir: options.dataDir, encryption: options.encryption, log });
   const tunnels = options.tunnels ?? createSshTunnelManager({ log });
   const opened = new Map<string, OpenHost>();
+  const openedPerch = new Map<string, OpenPerchHost>();
   const actionRequired = new Set<string>();
   const openingHosts = new Set<OpenHost>();
   const hostClosings = new WeakMap<OpenHost, Promise<void>>();
@@ -136,6 +145,9 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
     const host = opened.get(key);
     return host?.adapter.state() === "connected" ? host : undefined;
   };
+  /** A Perch host counts as connected when its orchestrator is live. */
+  const isConnected = (key: string, record?: RemoteHostRecord) =>
+    record && isPerchRecord(record) ? openedPerch.has(key) : connectedHost(key) !== undefined;
   const catalog = createRemoteSessionCatalog({
     getHost: (key) => {
       const host = connectedHost(key);
@@ -222,9 +234,48 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
     const host = opened.get(key);
     opened.delete(key);
     if (host) await closeHost(host);
+    await closePerch(key);
   }
-  async function openHostOnce(record: RemoteHostRecord): Promise<OpenHost> {
+  async function openPerchOnce(record: RemoteHostRecord): Promise<void> {
     assertOpen();
+    const ssh = sshMetadataOf(record);
+    if (!ssh) {
+      throw Object.assign(new Error("perch host requires SSH metadata"), { errorCode: "INVALID_ARGUMENT" });
+    }
+    const host = createPerchHost({
+      hostKey: record.hostKey, label: record.label, router: options.router, tunnels,
+      ssh: { host: ssh.host, remotePort: ssh.remotePort,
+        ...(ssh.port !== undefined ? { port: ssh.port } : {}),
+        ...(ssh.user ? { user: ssh.user } : {}),
+        ...(ssh.identityFile ? { identityFile: ssh.identityFile } : {}) },
+      ...(record.sshSecret ? { sshSecret: record.sshSecret } : {}),
+      emit: options.emit,
+      buildTransport: () => createSystemSshTransport({
+        host: ssh.host,
+        ...(ssh.port !== undefined ? { port: ssh.port } : {}),
+        ...(ssh.user ? { user: ssh.user } : {}),
+        ...(ssh.identityFile ? { identityFile: ssh.identityFile } : {}),
+        ...(record.sshSecret ? { password: record.sshSecret } : {}),
+      }),
+      log,
+    });
+    await host.connect();
+    if (closed) { await host.close(); throw unavailable(); }
+    openedPerch.set(record.hostKey, { hostKey: record.hostKey, label: record.label, host });
+  }
+
+  async function closePerch(key: string): Promise<void> {
+    const entry = openedPerch.get(key);
+    openedPerch.delete(key);
+    if (entry) await entry.host.close().catch((error: unknown) => log("warn", "perch host close failed", { error: String(error) }));
+  }
+
+  async function openHostOnce(record: RemoteHostRecord): Promise<OpenHost | void> {
+    assertOpen();
+    if (isPerchRecord(record)) {
+      await openPerchOnce(record);
+      return;
+    }
     const ssh = sshMetadataOf(record);
     if (record.metadata?.transport === "ssh" && !ssh) {
       throw Object.assign(new Error("invalid SSH host metadata"), { errorCode: "INVALID_ARGUMENT" });
@@ -317,17 +368,24 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
    * release and open it again. A second failure is surfaced unchanged: a
    * realignment that cannot help must never hide the reason the user sees.
    */
-  async function openHost(record: RemoteHostRecord, forceRealign = false): Promise<OpenHost> {
+  async function openHost(record: RemoteHostRecord, forceRealign = false): Promise<OpenHost | void> {
     try {
       return await openHostOnce(record);
     } catch (error) {
-      if (closed || !isHostVersionMismatch(error)) throw error;
+      if (closed || isPerchRecord(record) || !isHostVersionMismatch(error)) throw error;
       const realigned = await realignHost(record, forceRealign);
       if (!realigned) throw error;
       return await openHostOnce(realigned);
     }
   }
   function summaryOf(record: RemoteHostRecord): RemoteHostSummary {
+    if (isPerchRecord(record)) {
+      const live = openedPerch.get(record.hostKey);
+      const status: RemoteHostConnectionStatus = live ? "connected"
+        : actionRequired.has(record.hostKey) ? "action-required" : "disconnected";
+      return { hostKey: record.hostKey, label: record.label, url: record.url,
+        connected: live !== undefined, status, transport: transportOf(record) };
+    }
     const state = opened.get(record.hostKey)?.adapter.state();
     const status: RemoteHostConnectionStatus = state === "connected" || state === "connecting" || state === "reconnecting"
       ? state
@@ -342,6 +400,7 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
     try { await openHost(record); }
     catch (error) {
       if (closed) throw error;
+      if (requiresUserAction(error)) actionRequired.add(record.hostKey);
       log("warn", `remote host ${record.hostKey} paired but failed to open`, { error: String(error) });
     }
     return summaryOf(record);
@@ -354,7 +413,7 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       const record = (await registry.list()).find((item) => item.hostKey === key);
       assertOpen();
       if (!record) throw unavailable();
-      if (!connectedHost(key)) {
+      if (!isConnected(key, record)) {
         await closeLive(key);
         assertOpen();
         await openHost(record);
@@ -397,9 +456,11 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       closed = true;
       for (const controller of bootstraps.keys()) controller.abort();
       const hosts = new Set([...opened.values(), ...openingHosts]);
+      const perchHosts = [...openedPerch.values()];
       opened.clear();
+      openedPerch.clear();
       closing = (async () => {
-        const cleanup = [...hosts].map(closeHost);
+        const cleanup = [...[...hosts].map(closeHost), ...perchHosts.map((entry) => entry.host.close().catch(() => undefined))];
         // Forward creation is itself an operation we must cancel, not await
         // before disposal. The same fence prevents all late registrations.
         const disposal = tunnels.dispose();
@@ -410,10 +471,34 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
     },
     async list() { return (await registry.list()).map(summaryOf); },
     sessionSummaries: () => catalog.summaries(),
-    sessions: catalog.sessions,
+    async sessions(hostKey) {
+      await ensureReady(hostKey);
+      const record = (await registry.list()).find((item) => item.hostKey === hostKey);
+      if (record && isPerchRecord(record)) {
+        const entry = openedPerch.get(hostKey);
+        if (!entry) throw unavailable();
+        const list = await entry.host.sessions();
+        return list.map((session) => ({
+          id: makeRemoteSessionId(hostKey, session.id),
+          title: session.title, source: "remote" as const,
+          remoteHostKey: hostKey, remoteHostLabel: entry.label,
+          mode: "code" as SessionSummary["mode"],
+          permissionMode: (session.permissionMode ?? "ask") as SessionSummary["permissionMode"],
+          thinkingLevel: "default" as SessionSummary["thinkingLevel"],
+          messageCount: 0, updatedAt: new Date((session.updated ?? 0) * 1000).toISOString(),
+          createdAt: new Date((session.updated ?? 0) * 1000).toISOString(),
+          capabilities: { canPrompt: true, canStop: true, canRefresh: true },
+        }));
+      }
+      return catalog.sessions(hostKey);
+    },
     projects: catalog.projects,
     async browseProjects(hostKey, path) {
       await ensureReady(hostKey);
+      const record = (await registry.list()).find((item) => item.hostKey === hostKey);
+      if (record && isPerchRecord(record)) {
+        throw Object.assign(new Error("project browse is not available on a Perch host"), { errorCode: "CAPABILITY_UNAVAILABLE" });
+      }
       return catalog.browseProjects(hostKey, path);
     },
     registerProject: catalog.registerProject,
@@ -483,6 +568,32 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       });
     },
     async createSession(input) {
+      const record = (await registry.list()).find((item) => item.hostKey === input.hostKey);
+      if (record && isPerchRecord(record)) {
+        await ensureReady(input.hostKey);
+        const entry = openedPerch.get(input.hostKey);
+        if (!entry) throw unavailable();
+        // The Perch bridge creates a session from a remote absolute cwd, not a
+        // projectId; `input.projectId` carries the cwd chosen in the UI.
+        const created = await entry.host.createSession({
+          cwd: input.projectId,
+          ...(input.title ? { title: input.title } : {}),
+          ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
+        });
+        changed();
+        return {
+          id: makeRemoteSessionId(input.hostKey, created.id),
+          title: created.title, source: "remote" as const,
+          remoteHostKey: input.hostKey, remoteHostLabel: entry.label,
+          mode: "code" as SessionSummary["mode"],
+          permissionMode: (created.permissionMode ?? "ask") as SessionSummary["permissionMode"],
+          thinkingLevel: "default" as SessionSummary["thinkingLevel"],
+          messageCount: 0,
+          updatedAt: new Date((created.updated ?? 0) * 1000).toISOString(),
+          createdAt: new Date((created.updated ?? 0) * 1000).toISOString(),
+          capabilities: { canPrompt: true, canStop: true, canRefresh: true },
+        };
+      }
       const session = await catalog.createSession(input);
       changed();
       return session;
