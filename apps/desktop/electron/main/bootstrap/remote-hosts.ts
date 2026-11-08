@@ -61,6 +61,10 @@ export interface RemoteHostsBoot {
   bootstrapHost(request: RemoteHostBootstrapRequest): Promise<RemoteHostBootstrapResult>;
   reconnectHost(hostKey: string): Promise<RemoteHostSummary>;
   ensureReady(hostKey: string): Promise<RemoteHostSummary>;
+  /** Update a paired host's label/SSH fields, then reconnect. */
+  updateHost(hostKey: string, patch: Partial<Pick<RemoteHostRecord, "label" | "sshSecret">> & { ssh?: Partial<import("@pi-desktop/shared").RemoteHostSshMetadata> }): Promise<RemoteHostSummary>;
+  /** One live connect + first poll; returns the real failure reason, never a fake online. */
+  checkHost(hostKey: string): Promise<{ ok: boolean; error?: string }>;
   removeHost(hostKey: string): Promise<void>;
   sessionSummaries(): SessionSummary[];
   sessions(hostKey: string): Promise<SessionSummary[]>;
@@ -786,6 +790,36 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       // Host the automatic throttling has already given up on for this release.
       await openHost(record, true);
       return summaryOf(record);
+    }),
+    updateHost: (key, patch) => serial(key, async () => {
+      const record = (await registry.list()).find((item) => item.hostKey === key);
+      if (!record) throw unavailable();
+      const next: RemoteHostRecord = {
+        ...record,
+        ...(patch.label ? { label: patch.label } : {}),
+        ...(patch.sshSecret !== undefined ? { sshSecret: patch.sshSecret } : {}),
+        ...(patch.ssh || record.metadata?.ssh
+          ? { metadata: { ...record.metadata, ssh: { ...(record.metadata?.ssh as object ?? {}), ...patch.ssh } } }
+          : {}),
+      };
+      await registry.upsert(next);
+      await closeLive(key);
+      await tunnels.close(key);
+      await openHost(next);
+      return summaryOf(next);
+    }),
+    checkHost: (key) => serial(key, async () => {
+      const record = (await registry.list()).find((item) => item.hostKey === key);
+      if (!record) throw unavailable();
+      try {
+        await closeLive(key);
+        await openHost(record);
+        const summary = summaryOf(record);
+        if (!summary.connected) return { ok: false, error: "host did not come online" };
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
     }),
     async bootstrapHost(request) {
       assertOpen();

@@ -28,6 +28,18 @@ export function registerRemoteSessionIpc(registrar: IpcRegistrar, getBoot: () =>
     const key = hostKey(object(request));
     return { host: await getBoot().reconnectHost(key) };
   });
+  registrar.handle(IPC.invoke.remoteHostUpdate, async (request: unknown) => {
+    const input = object(request);
+    const key = hostKey(input);
+    const patch: { label?: string; sshSecret?: string; ssh?: Record<string, unknown> } = {};
+    if (typeof input.label === "string" && input.label.trim()) patch.label = text(input.label, "label", 200);
+    if (typeof input.password === "string") patch.sshSecret = input.password;
+    if (input.ssh && typeof input.ssh === "object") patch.ssh = input.ssh as Record<string, unknown>;
+    return { host: await getBoot().updateHost(key, patch) };
+  });
+  registrar.handle(IPC.invoke.remoteHostCheck, async (request: unknown) => {
+    return getBoot().checkHost(hostKey(object(request)));
+  });
   registrar.handle(IPC.invoke.remoteHostProjects, async (request: unknown) => {
     return { projects: await getBoot().projects(hostKey(object(request))) };
   });

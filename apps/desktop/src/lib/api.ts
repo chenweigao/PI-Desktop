@@ -2120,6 +2120,12 @@ export const api = {
     invoke<{ ok: true }>(IPC.invoke.remoteHostRemove, { hostKey }),
   reconnectRemoteHost: (hostKey: string) =>
     invoke<{ host: RemoteHostSummary }>(IPC.invoke.remoteHostReconnect, { hostKey }),
+  /** Update a paired host's label/SSH fields, then reconnect. */
+  updateRemoteHost: (hostKey: string, patch: { label?: string; password?: string; ssh?: Record<string, unknown> }) =>
+    invoke<{ host: RemoteHostSummary }>(IPC.invoke.remoteHostUpdate, { hostKey, ...patch }),
+  /** One live connect + first poll; returns the real failure reason. */
+  checkRemoteHost: (hostKey: string) =>
+    invoke<{ ok: boolean; error?: string }>(IPC.invoke.remoteHostCheck, { hostKey }),
   remoteHostBrowseProjects: (hostKey: string, path?: string) =>
     invoke<RemoteHostBrowseProjectsResult>(IPC.invoke.remoteHostBrowseProjects, { hostKey, ...(path === undefined ? {} : { path }) }),
   /** The Perch bridge's combined model catalog (each entry names its runtime). */

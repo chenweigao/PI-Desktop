@@ -290,6 +290,10 @@ export const IPC = {
      */
     remoteHostAddKimi: "pi-desktop/remoteHost/addKimi",
     remoteHostReconnect: "pi-desktop/remoteHost/reconnect",
+    /** Update a paired host's label/SSH fields, then reconnect. */
+    remoteHostUpdate: "pi-desktop/remoteHost/update",
+    /** One live connect + first poll; returns the real failure reason. */
+    remoteHostCheck: "pi-desktop/remoteHost/check",
     remoteHostProjects: "pi-desktop/remoteHost/projects",
     /** Combined Perch model catalog for a host (each entry names its runtime). */
     remoteHostModels: "pi-desktop/remoteHost/models",

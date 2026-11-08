@@ -71,6 +71,10 @@ export function RemoteHostsPage() {
   const { t } = useTranslation();
   const { t: remoteT } = useTranslation("remote");
   const [reconnecting, setReconnecting] = useState<string | null>(null);
+  const [checking, setChecking] = useState<string | null>(null);
+  const [checkResult, setCheckResult] = useState<Record<string, string>>({});
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState("");
   const alive = useRef(true);
   const refreshGeneration = useRef(0);
   const showToast = useAppStore((state) => state.showToast);
@@ -127,6 +131,41 @@ export function RemoteHostsPage() {
       if (alive.current) setError(t(remoteHostErrorKey(caught)));
     } finally {
       if (alive.current) setReconnecting(null);
+    }
+  };
+
+  const check = async (host: RemoteHostSummary) => {
+    if (checking) return;
+    setChecking(host.hostKey);
+    setError(null);
+    try {
+      const result = await api.checkRemoteHost(host.hostKey);
+      if (alive.current) {
+        setCheckResult((prev) => ({
+          ...prev,
+          [host.hostKey]: result.ok
+            ? t("settings.remoteHosts.checkOk")
+            : t("settings.remoteHosts.checkFailed", { message: result.error ?? "" }),
+        }));
+        await refresh();
+      }
+    } catch (caught) {
+      if (alive.current) setError(t(remoteHostErrorKey(caught)));
+    } finally {
+      if (alive.current) setChecking(null);
+    }
+  };
+
+  const saveEdit = async (event: React.FormEvent<HTMLFormElement>, host: RemoteHostSummary) => {
+    event.preventDefault();
+    const label = editLabel.trim();
+    if (!label) return;
+    try {
+      await api.updateRemoteHost(host.hostKey, { label });
+      setEditing(null);
+      if (alive.current) await refresh();
+    } catch (caught) {
+      if (alive.current) setError(t(remoteHostErrorKey(caught)));
     }
   };
 
@@ -379,6 +418,12 @@ export function RemoteHostsPage() {
                 <Button variant="secondary" onClick={() => void openProject({ remoteHostKey: host.hostKey })}>
                   {remoteT("newProject")}
                 </Button>
+                <Button variant="ghost" disabled={checking !== null} onClick={() => void check(host)}>
+                  {checking === host.hostKey ? remoteT("loading") : t("settings.remoteHosts.check")}
+                </Button>
+                <Button variant="ghost" onClick={() => setEditing(editing === host.hostKey ? null : host.hostKey)}>
+                  {t("settings.remoteHosts.edit")}
+                </Button>
                 <Button variant="ghost" disabled={reconnecting !== null} onClick={() => void reconnect(host)}>
                   {reconnecting === host.hostKey ? remoteT("loading") : remoteT("reconnect")}
                 </Button>
@@ -393,6 +438,30 @@ export function RemoteHostsPage() {
                     : t("settings.remoteHosts.remove")}
                 </Button>
               </span>
+              {editing === host.hostKey ? (
+                <form
+                  className="settings-remote-host-edit"
+                  onSubmit={(event) => void saveEdit(event, host)}
+                >
+                  <Field label={t("settings.remoteHosts.fieldLabel")}>
+                    <Input
+                      value={editLabel}
+                      onChange={(event) => setEditLabel(event.target.value)}
+                      aria-label={t("settings.remoteHosts.fieldLabel")}
+                      autoComplete="off"
+                    />
+                  </Field>
+                  <div className="settings-remote-host-form-actions">
+                    <Button type="button" variant="ghost" onClick={() => setEditing(null)}>{t("common.cancel")}</Button>
+                    <Button type="submit" variant="primary" disabled={!editLabel.trim()}>
+                      {t("settings.remoteHosts.save")}
+                    </Button>
+                  </div>
+                </form>
+              ) : null}
+              {checkResult[host.hostKey] ? (
+                <p role="status" className="settings-remote-host-check">{checkResult[host.hostKey]}</p>
+              ) : null}
             </article>
           ))
         )}
