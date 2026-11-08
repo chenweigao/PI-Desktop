@@ -68,6 +68,8 @@ export function createInitialState(): AppStateData {
     sessionCompactions: {},
     providers: [],
     providerModels: {},
+    remoteModelCatalogs: {},
+    remoteModelCatalogErrors: {},
     plugins: [],
     pluginThemes: [],
     pluginViews: [],

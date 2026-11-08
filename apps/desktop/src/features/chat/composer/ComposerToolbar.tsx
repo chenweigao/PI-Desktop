@@ -42,6 +42,12 @@ export type ComposerToolbarProps = {
   permissionOpen: boolean;
   setPermissionOpen: Dispatch<SetStateAction<boolean>>;
   controlsBlocked: boolean;
+  /**
+   * Gate for the model picker when it diverges from the other configuration
+   * controls: a Perch remote session can switch models while the mode and
+   * permission pickers stay disabled. Defaults to `controlsBlocked`.
+   */
+  modelControlsBlocked?: boolean;
   localToolsAllowed?: boolean;
   attachmentsAllowed?: boolean;
   stopAllowed?: boolean;
@@ -79,12 +85,13 @@ export function ComposerToolbar({
   providerId,
   modelId,
   thinkingLevel,
+  controlsBlocked,
+  modelControlsBlocked,
   composerPermissionMode,
   modeOpen,
   setModeOpen,
   permissionOpen,
   setPermissionOpen,
-  controlsBlocked,
   localToolsAllowed = true,
   attachmentsAllowed = true,
   stopAllowed = true,
@@ -194,13 +201,13 @@ export function ComposerToolbar({
         <ComposerModelPicker
           t={t}
           controller={modelMenu}
+          controlsBlocked={modelControlsBlocked ?? controlsBlocked}
           modelLabel={modelLabel}
           thinkingLabel={thinkingLabel}
           fastMode={modelFastMode}
           thinkingLevel={thinkingLevel}
           selectedProviderId={providerId}
           selectedModelId={modelId}
-          controlsBlocked={controlsBlocked}
           onCloseOtherMenus={() => setPermissionOpen(false)}
           onOpenModelSettings={() => useAppStore.getState().setSettingsTab("agent")}
         />

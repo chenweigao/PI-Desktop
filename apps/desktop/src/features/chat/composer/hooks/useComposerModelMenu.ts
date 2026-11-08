@@ -17,6 +17,7 @@ import {
   composerModelsForProvider,
   sameComposerModelId,
 } from "../../../../lib/composer-models";
+import { groupPerchModelCatalog } from "../../../../lib/perch-model-catalog";
 import {
   providerDisplayName,
   providerSearchText,
@@ -51,6 +52,16 @@ type UseComposerModelMenuOptions = {
   thinkingProvider: ProviderPublic | null | undefined;
   thinkingLevel: SessionThinkingLevel;
   controlsBlocked: boolean;
+  /**
+   * Set when the active session lives on a Perch remote host that advertises
+   * `canConfigureModel`: the menu lists that host's catalog instead of the
+   * local providers, and a selection sends only the model id.
+   */
+  remoteCatalogHostKey?: string | null;
+  /** While the remote session is busy the bridge refuses a model switch. */
+  modelSwitchBlocked?: boolean;
+  /** Explains `modelSwitchBlocked` as a toast on a switch attempt. */
+  modelSwitchBlockedMessage?: string;
   configureActiveSession: (configuration: {
     mode: Mode; providerId?: string; modelId?: string; thinkingLevel: SessionThinkingLevel;
   }) => Promise<void>;
@@ -64,6 +75,9 @@ export function useComposerModelMenu({
   thinkingProvider: resolvedThinkingProvider,
   thinkingLevel,
   controlsBlocked,
+  remoteCatalogHostKey = null,
+  modelSwitchBlocked = false,
+  modelSwitchBlockedMessage,
   configureActiveSession,
 }: UseComposerModelMenuOptions) {
   const providers = useAppStore((s) => s.providers);
@@ -77,6 +91,13 @@ export function useComposerModelMenu({
   const providerModels = useAppStore((s) => s.providerModels);
   const loadProviderModels = useAppStore((s) => s.loadProviderModels);
   const showToast = useAppStore((s) => s.showToast);
+  const remoteModelCatalog = useAppStore((s) =>
+    remoteCatalogHostKey ? s.remoteModelCatalogs[remoteCatalogHostKey] : undefined,
+  );
+  const remoteModelCatalogError = useAppStore((s) =>
+    remoteCatalogHostKey ? s.remoteModelCatalogErrors[remoteCatalogHostKey] : undefined,
+  );
+  const loadRemoteModelCatalog = useAppStore((s) => s.loadRemoteModelCatalog);
   const [open, setOpen] = useState(false);
   // null follows the default section; a rail click pins one until close.
   const [section, setSection] = useState<string | null>(null);
@@ -132,30 +153,48 @@ export function useComposerModelMenu({
     );
   const availableThinkingLevels = providerThinkingLevels(thinkingProvider);
   const thinkingMenuLevels = sessionThinkingMenuLevels(availableThinkingLevels);
+  const remoteGroups = useMemo(
+    () =>
+      remoteCatalogHostKey && remoteModelCatalog
+        ? groupPerchModelCatalog(remoteCatalogHostKey, remoteModelCatalog)
+        : [],
+    [remoteCatalogHostKey, remoteModelCatalog],
+  );
   const modelGroups = useMemo(
     () =>
-      providers
-        .filter(
-          (candidate) =>
-            candidate.enabled &&
-            (candidate.hasSecret || candidate.authKind === "none"),
-        )
-        .map((candidate) => {
-          const models = composerModelsForProvider(
-            candidate,
-            providerModels[candidate.id],
-            imageGenerationCandidates,
-          );
-          return {
-            provider: candidate,
-            providerDisplayName: providerDisplayName(candidate),
-            providerSearchText: providerSearchText(candidate),
-            models,
-          };
-        })
-        .filter((group) => group.models.length > 0),
-    [providers, providerModels, imageGenerationCandidates],
+      remoteCatalogHostKey
+        ? remoteGroups
+        : providers
+            .filter(
+              (candidate) =>
+                candidate.enabled &&
+                (candidate.hasSecret || candidate.authKind === "none"),
+            )
+            .map((candidate) => {
+              const models = composerModelsForProvider(
+                candidate,
+                providerModels[candidate.id],
+                imageGenerationCandidates,
+              );
+              return {
+                provider: candidate,
+                providerDisplayName: providerDisplayName(candidate),
+                providerSearchText: providerSearchText(candidate),
+                models,
+              };
+            })
+            .filter((group) => group.models.length > 0),
+    [remoteCatalogHostKey, remoteGroups, providers, providerModels, imageGenerationCandidates],
   );
+  // The menu's provider identity for the current selection: a local session's
+  // provider owns it directly; a remote session's current model names the
+  // agent group holding it.
+  const menuSelectedProviderId = useMemo(() => {
+    if (!remoteCatalogHostKey) return provider?.id;
+    return modelGroups.find((group) =>
+      group.models.some((model) => sameComposerModelId(model.modelId, modelId ?? "")),
+    )?.provider.id;
+  }, [remoteCatalogHostKey, modelGroups, provider?.id, modelId]);
   const recentEntries = useMemo(() => {
     const entries = modelGroups.flatMap(group => group.models.map(model => ({ provider: group.provider, model })));
     return (recentModels ?? []).flatMap(recent => {
@@ -210,8 +249,8 @@ export function useComposerModelMenu({
     ...modelGroups.map((group) => group.models.length),
   );
   const selectedProviderSection =
-    provider && modelGroups.some((group) => group.provider.id === provider.id)
-      ? providerModelSection(provider.id)
+    menuSelectedProviderId && modelGroups.some((group) => group.provider.id === menuSelectedProviderId)
+      ? providerModelSection(menuSelectedProviderId)
       : null;
   const defaultSection =
     recentEntries.length > 0 ? RECENT_MODEL_SECTION : (selectedProviderSection ?? sections[0]?.id ?? null);
@@ -242,10 +281,10 @@ export function useComposerModelMenu({
     () =>
       flatModels.findIndex(
         (entry) =>
-          entry.provider.id === provider?.id &&
+          entry.provider.id === menuSelectedProviderId &&
           sameComposerModelId(entry.model.modelId, modelId ?? ""),
       ),
-    [flatModels, provider?.id, modelId],
+    [flatModels, menuSelectedProviderId, modelId],
   );
 
   useEffect(() => {
@@ -261,6 +300,14 @@ export function useComposerModelMenu({
       }
     }
   }, [loadProviderModels, open, providers]);
+
+  // The chip label and the menu both read this catalog, so load it with the
+  // session rather than on menu open — the current model's name should never
+  // fall back to a bare wire id once the host has answered.
+  useEffect(() => {
+    if (!remoteCatalogHostKey) return;
+    void loadRemoteModelCatalog(remoteCatalogHostKey);
+  }, [remoteCatalogHostKey, loadRemoteModelCatalog]);
 
   useEffect(() => {
     if (open) return;
@@ -289,6 +336,31 @@ export function useComposerModelMenu({
   const selectModel = async (candidate: ProviderPublic, nextModelId: string) => {
     thinkingQueueRef.current?.invalidate();
     await thinkingQueueRef.current?.idle();
+    // A Perch remote session switches models through its host's own catalog:
+    // the bridge resolves the provider from the model id, so no local
+    // provider id crosses the wire and no local thinking ladder applies.
+    if (remoteCatalogHostKey) {
+      if (modelSwitchBlocked) {
+        if (modelSwitchBlockedMessage) {
+          showToast(modelSwitchBlockedMessage, { variant: "info" });
+        }
+        return;
+      }
+      try {
+        await configureActiveSession({
+          mode,
+          modelId: nextModelId,
+          thinkingLevel,
+        });
+        setQuery("");
+        setModelHighlight(-1);
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : String(error), {
+          variant: "error",
+        });
+      }
+      return;
+    }
     if (isImageGenerationModel(
       imageGenerationBindings(
         useAppStore.getState().settings?.imageGenerationModels,
@@ -396,6 +468,15 @@ export function useComposerModelMenu({
     });
   };
 
+  // Remote catalog state for the picker's empty surface: while nothing is
+  // cached, the host answer is either still in flight or has failed.
+  const remoteCatalogStatus = !remoteCatalogHostKey
+    ? ("local" as const)
+    : remoteModelCatalog !== undefined
+      ? ("ready" as const)
+      : remoteModelCatalogError
+        ? ("error" as const)
+        : ("loading" as const);
   return {
     open,
     setOpen,
@@ -420,5 +501,7 @@ export function useComposerModelMenu({
     commitThinkingLevel,
     onMenuKeyDown,
     controlsBlocked,
+    menuSelectedProviderId,
+    remoteCatalogStatus,
   };
 }

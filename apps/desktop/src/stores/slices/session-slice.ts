@@ -846,11 +846,25 @@ export function createSessionSlice({
       set((state) => ({
         sessions: state.sessions.map((session) =>
           session.id === sessionId
-            ? {
-                ...result.session,
-                pinned: sessionIsPinned(sessionId, state.sessionMeta),
-                archived: sessionIsArchived(sessionId, state.sessionMeta),
-              }
+            ? isRemoteSession(session)
+              ? {
+                  // A Perch backend answers with only the switched model
+                  // identity (and a bare host-side id); merge it onto the
+                  // known row so the title, capabilities and remote identity
+                  // survive the switch. The renderer-visible id and source
+                  // are never rewritten by a configure response.
+                  ...session,
+                  ...result.session,
+                  id: session.id,
+                  source: session.source,
+                  pinned: sessionIsPinned(sessionId, state.sessionMeta),
+                  archived: sessionIsArchived(sessionId, state.sessionMeta),
+                }
+              : {
+                  ...result.session,
+                  pinned: sessionIsPinned(sessionId, state.sessionMeta),
+                  archived: sessionIsArchived(sessionId, state.sessionMeta),
+                }
             : session,
         ),
         planningStates: {

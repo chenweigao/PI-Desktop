@@ -25,6 +25,7 @@ import { isActivePlanExecution } from "../lib/plan-mode-state";
 import { headAsk, queuedAskCount } from "../lib/pending-asks";
 import type { QueuedPrompt } from "../lib/queued-prompts";
 import { composerModelDisplayName, sameComposerModelId } from "../lib/composer-models";
+import { perchCatalogModelName } from "../lib/perch-model-catalog";
 import { sessionFastModeActive } from "../lib/fast-mode-command";
 import {
   resolveComposerThinkingProvider,
@@ -107,6 +108,15 @@ export function Composer({
     [plugins, activeSessionSummary, activeSessionId],
   );
   const remoteSession = isRemoteSession(capabilitySession);
+  // A Perch host session advertises canConfigureModel and carries its host
+  // key; its model menu lists that host's catalog instead of local providers.
+  const remoteCatalogHostKey =
+    remoteSession && activeSessionSummary?.capabilities?.canConfigureModel === true
+      ? activeSessionSummary.remoteHostKey ?? null
+      : null;
+  const remoteModelCatalog = useAppStore((s) =>
+    remoteCatalogHostKey ? s.remoteModelCatalogs[remoteCatalogHostKey] : undefined,
+  );
   const localToolsAllowed = sessionAllows(capabilitySession, "canUseLocalTools");
   const attachmentsAllowed = sessionAllows(capabilitySession, "canAttach");
   const promptAllowed = sessionAllows(capabilitySession, "canPrompt");
@@ -392,9 +402,13 @@ export function Composer({
     configuredThinkingLevel,
   );
   const thinkingLabel = thinkingLevel;
-  const modelLabel = modelId
-    ? composerModelDisplayName(provider, modelId)
-    : t("chat.model");
+  // A Perch session's label comes from its host catalog (name, falling back
+  // to the wire id); local sessions keep the configured-alias rule.
+  const modelLabel = remoteCatalogHostKey
+    ? (perchCatalogModelName(remoteModelCatalog, modelId) ?? modelId ?? t("chat.model"))
+    : modelId
+      ? composerModelDisplayName(provider, modelId)
+      : t("chat.model");
   const modelMenu = useComposerModelMenu({
     configureActiveSession,
     mode,
@@ -404,6 +418,11 @@ export function Composer({
     thinkingProvider,
     thinkingLevel,
     controlsBlocked,
+    remoteCatalogHostKey,
+    // The Perch bridge refuses a model switch mid-turn; say so on attempt
+    // instead of queuing a write the backend would reject.
+    modelSwitchBlocked: remoteSession && isRunning,
+    modelSwitchBlockedMessage: t("chat.remoteModelBusy"),
   });
   const modelReady = remoteSession ? promptAllowed : nativeSession
     ? activeSessionSummary.capabilities?.canPrompt === true
@@ -619,7 +638,7 @@ export function Composer({
             t={t}
             mode={mode}
             planningLive={planningLive}
-            providerId={provider?.id}
+            providerId={provider?.id ?? modelMenu.menuSelectedProviderId}
             modelId={modelId}
             thinkingLevel={thinkingLevel}
             composerPermissionMode={composerPermissionMode}
@@ -627,7 +646,11 @@ export function Composer({
             setModeOpen={setModeOpen}
             permissionOpen={permissionOpen}
             setPermissionOpen={setPermissionOpen}
-            controlsBlocked={controlsBlocked}
+            // Remote sessions keep the mode/permission pickers disabled: the
+            // Perch bridge only honors the model switch, so those writes
+            // would be silently ignored.
+            controlsBlocked={controlsBlocked || remoteSession}
+            modelControlsBlocked={controlsBlocked}
             localToolsAllowed={localToolsAllowed}
             attachmentsAllowed={attachmentsAllowed}
             stopAllowed={sessionAllows(capabilitySession, "canStop")}

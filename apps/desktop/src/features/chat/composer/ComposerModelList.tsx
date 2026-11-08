@@ -101,9 +101,11 @@ export function ComposerModelList({
   t, query, setQuery, modelSearchRef, modelListRef, modelGroups,
   modelHighlight, setModelHighlight, selectedProviderId, selectedModelId, selectModel,
   recentEntries, sections, activeSection, sectionStep, selectSection, showSectionRail, searching, paneRows,
-  onOpenModelSettings,
+  onOpenModelSettings, emptyLabel,
 }: {
   onOpenModelSettings?: () => void;
+  /** Overrides the empty surface, e.g. a remote catalog still loading. */
+  emptyLabel?: string;
   paneRows: number;
   recentEntries: Array<{ provider: ProviderPublic; model: ModelInfo }>;
   sections: ComposerModelSection[];
@@ -255,7 +257,7 @@ export function ComposerModelList({
             </div>
           ))}
           {flatCount === 0 ? (
-            <div className="composer-model-empty">{t("chat.noModelResults")}</div>
+            <div className="composer-model-empty">{emptyLabel ?? t("chat.noModelResults")}</div>
           ) : null}
         </div>
       </div>

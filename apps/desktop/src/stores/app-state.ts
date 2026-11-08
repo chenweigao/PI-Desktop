@@ -1,4 +1,5 @@
 import type { RecentModel } from "../lib/recent-models";
+import type { PerchModelEntry } from "../lib/perch-model-catalog";
 import type { RemoteProjectTarget } from "../lib/remote-project-session";
 import type {
   AgentEventEnvelope,
@@ -38,6 +39,7 @@ import type {
   ProjectSort,
   SessionMeta,
   SessionSort,
+  SidebarViewMode,
 } from "../lib/sidebar-preferences";
 import type { PermissionQueues } from "../lib/pending-permissions";
 import type { AskDraft, AskDrafts, AskQueues } from "../lib/pending-asks";
@@ -170,6 +172,10 @@ export type AppState = {
   rememberModel: (model: { providerId?: string; modelId?: string }) => void;
   /** Discovered model lists per provider id (composer model menu). */
   providerModels: Record<string, ModelInfo[]>;
+  /** Perch model catalog per remote hostKey (remote sessions' model menu). */
+  remoteModelCatalogs: Record<string, PerchModelEntry[]>;
+  /** Last load failure per host key; cleared by the next successful load. */
+  remoteModelCatalogErrors: Record<string, string>;
   workspace?: ProjectWorkspace | null;
   onboarding?: OnboardingState;
   plugins: PluginSummary[];
@@ -328,6 +334,7 @@ export type AppState = {
   moveSessionProject: (id: string, projectPath: string) => Promise<boolean>;
   deleteSession: (id: string) => Promise<void>;
   setSessionSort: (sort: SessionSort) => void;
+  setSessionViewMode: (mode: SidebarViewMode) => void;
   setSessionArchiveVisibility: (show: boolean) => void;
   setSessionView: (view: Partial<SessionView> | boolean) => void;
   setShowArchived: (show: boolean) => void;
@@ -350,6 +357,14 @@ export type AppState = {
   refreshProviders: () => Promise<void>;
   /** Load a provider's model list into the cache (no-op when cached). */
   loadProviderModels: (providerId: string) => Promise<void>;
+  /**
+   * Load a Perch host's merged model catalog. Cached per host key; a failed
+   * refresh keeps the previously loaded catalog and records the error.
+   */
+  loadRemoteModelCatalog: (
+    hostKey: string,
+    options?: { force?: boolean },
+  ) => Promise<void>;
   refreshPlugins: () => Promise<void>;
   /** Reload contributed themes. */
   refreshPluginThemes: () => Promise<void>;
@@ -466,4 +481,6 @@ export type SessionView = {
   /** Whether archived sessions are included in sidebar queries. */
   archived: boolean;
   showArchived?: boolean;
+  /** Sidebar layout: grouped by project or one flat session list. */
+  mode: SidebarViewMode;
 };

@@ -63,8 +63,17 @@ export function ComposerModelPicker({
     selectModel,
     commitThinkingLevel,
     onMenuKeyDown,
+    remoteCatalogStatus,
   } = controller;
   const fastSuffix = fastMode ? ` · ${t("chat.fastModeBadge")}` : "";
+  // The remote catalog's empty surface reports its own state; a loaded-but-
+  // empty list and any local search keep the standard "no results" line.
+  const emptyLabel =
+    remoteCatalogStatus === "loading"
+      ? t("chat.remoteModelLoading")
+      : remoteCatalogStatus === "error"
+        ? t("chat.remoteModelUnavailable")
+        : undefined;
 
   return (
     <AnchoredMenu
@@ -122,7 +131,7 @@ export function ComposerModelPicker({
           recentEntries={recentEntries} sections={sections}
           activeSection={activeSection} sectionStep={sectionStep} selectSection={selectSection}
           showSectionRail={showSectionRail} searching={searching} paneRows={paneRows}
-          setModelHighlight={setModelHighlight} selectModel={selectModel}
+          setModelHighlight={setModelHighlight} selectModel={selectModel} emptyLabel={emptyLabel}
           selectedProviderId={selectedProviderId} selectedModelId={selectedModelId}
           onOpenModelSettings={onOpenModelSettings ? () => {
             setOpen(false);

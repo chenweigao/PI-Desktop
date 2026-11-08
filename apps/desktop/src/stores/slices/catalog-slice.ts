@@ -32,6 +32,7 @@ export function createCatalogSlice({
   | "rememberModel"
   | "refreshProviders"
   | "loadProviderModels"
+  | "loadRemoteModelCatalog"
   | "refreshPlugins"
   | "refreshPluginThemes"
   | "refreshPluginViews"
@@ -43,6 +44,8 @@ export function createCatalogSlice({
   | "openNotification"
   | "acknowledgeSessionOutcome"
 > {
+  // One in-flight catalog request per remote host; a second caller piggybacks.
+  const remoteModelCatalogLoads = new Map<string, Promise<void>>();
   return {
     rememberModel: (model) => {
       const recentModels = rememberModelInList(get().recentModels, model);
@@ -146,6 +149,47 @@ export function createCatalogSlice({
       } finally {
         if (providerModelLoads.get(providerId) === load) {
           providerModelLoads.delete(providerId);
+        }
+      }
+    },
+
+    loadRemoteModelCatalog: async (hostKey, options) => {
+      if (!hostKey) return;
+      // Cached for the app run unless the caller asks for a refresh.
+      if (!options?.force && get().remoteModelCatalogs[hostKey]) return;
+      const existing = remoteModelCatalogLoads.get(hostKey);
+      if (existing) return existing;
+      const load = (async () => {
+        try {
+          const result = await api.remoteHostModels(hostKey);
+          set((state) => {
+            const remoteModelCatalogErrors = { ...state.remoteModelCatalogErrors };
+            delete remoteModelCatalogErrors[hostKey];
+            return {
+              remoteModelCatalogs: {
+                ...state.remoteModelCatalogs,
+                [hostKey]: result.models,
+              },
+              remoteModelCatalogErrors,
+            };
+          });
+        } catch (error) {
+          // A failed load never erases a previously cached catalog; the menu
+          // only surfaces the error when there is nothing cached to show.
+          set((state) => ({
+            remoteModelCatalogErrors: {
+              ...state.remoteModelCatalogErrors,
+              [hostKey]: error instanceof Error ? error.message : String(error),
+            },
+          }));
+        }
+      })();
+      remoteModelCatalogLoads.set(hostKey, load);
+      try {
+        await load;
+      } finally {
+        if (remoteModelCatalogLoads.get(hostKey) === load) {
+          remoteModelCatalogLoads.delete(hostKey);
         }
       }
     },

@@ -1,8 +1,12 @@
 import { IPC } from "@pi-desktop/shared";
 import i18n from "i18next";
 
+// sessionConfigure is absent on purpose: the Perch backend serves it (model
+// switch) through the BackendRouter. The capability gate in the session slice
+// keeps native RACP sessions — which advertise canConfigureModel: false —
+// from ever issuing the call.
 const localOnly = new Set<string>([
-  IPC.invoke.sessionConfigure, IPC.invoke.sessionFork, IPC.invoke.sessionMoveProject,
+  IPC.invoke.sessionFork, IPC.invoke.sessionMoveProject,
   IPC.invoke.sessionReplaceMessages, IPC.invoke.sessionSaveRevision,
   IPC.invoke.sessionDeleteMessage, IPC.invoke.sessionRetractPendingPrompt,
   IPC.invoke.sessionListRevisions, IPC.invoke.sessionActivateRevision,
