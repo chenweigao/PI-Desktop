@@ -343,6 +343,45 @@
   font-size: var(--text-sm);
   text-overflow: ellipsis;
   white-space: nowrap;
+  white-space: nowrap;
+}
+
+/* Origin chip: the Pi-native marker and the remote host label. Quiet pill,
+   truncated before the row title ever is — it identifies, it does not shout. */
+.thread-item-source {
+  max-width: 40%;
+  flex: 0 1 auto;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  padding: 0 5px;
+  background: color-mix(in oklab, var(--ds-text-muted) 14%, transparent);
+  color: var(--ds-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-item.active .thread-item-source {
+  color: var(--ds-text-primary);
+}
+
+/* Remote project headers: the name may shrink, the parent-path qualifier
+   shrinks first, and the host chip never does. */
+.sidebar-session-group-title .sidebar-session-group-name {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.sidebar-session-group-qualifier {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--ds-text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-normal);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Multi-select highlight: visually distinct from the single active row. */

@@ -146,7 +146,11 @@ test("remote capabilities and workspace identity fail closed, local defaults sta
   useAppStore.getState().openFileInWorkPanel("/local/private/secret");
   useAppStore.getState().openUrlInWorkPanel("https://example.test");
   assert.equal(calls.length, 0);
-  await assert.rejects(api.configureSession(session.id, { mode: "agent", modelId: "local" }), { code: "CAPABILITY_UNAVAILABLE" });
+  // api.configureSession is no longer blocked at the renderer boundary: a
+  // remote id routes to the session's own backend (Perch serves the model
+  // switch). The fail-closed gate for this RACP-shaped session lives one
+  // layer up — the configureActiveSession call above never reached IPC
+  // because the session does not advertise canConfigureModel.
   await assert.rejects(api.prompt({ sessionId: session.id, content: "attached", attachments: [{ path: "/local/private" }] }), { code: "CAPABILITY_UNAVAILABLE" });
   assert.equal(calls.length, 0);
   const html = await fixture.render("chat", { session });

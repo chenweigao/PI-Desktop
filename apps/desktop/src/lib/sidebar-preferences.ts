@@ -17,6 +17,14 @@ export function normalizeProjectPath(projectPath?: string | null): string | null
 }
 
 export type ProjectSort = "recent" | "created" | "oldest" | "name" | "manual";
+
+/** Sidebar list layout: project groups or one flat, sorted session list. */
+export type SidebarViewMode = "projects" | "flat";
+export const DEFAULT_SIDEBAR_VIEW_MODE: SidebarViewMode = "projects";
+export function sidebarViewMode(value: unknown): SidebarViewMode {
+  return value === "flat" ? "flat" : DEFAULT_SIDEBAR_VIEW_MODE;
+}
+
 export type SessionMeta = {
   pinned?: boolean;
   archived?: boolean;
@@ -37,7 +45,7 @@ export type SidebarPreferences = {
   sessionMeta: Record<string, SessionMeta>;
   projectMeta: Record<string, ProjectMeta>;
   projectSort: ProjectSort;
-  sessionView: { sort: SessionSort; archived: boolean };
+  sessionView: { sort: SessionSort; archived: boolean; mode: SidebarViewMode };
   openProjectPaths: string[];
 };
 
@@ -180,6 +188,7 @@ export function loadSidebarPreferences(): SidebarPreferences {
           : typeof view.showArchived === "boolean"
             ? view.showArchived
             : false,
+      mode: sidebarViewMode(view.mode),
     },
     openProjectPaths: cleanPaths(root.openProjectPaths),
   };
@@ -214,6 +223,7 @@ export function saveSidebarPreferences(value: SidebarPreferences): void {
     sessionView: {
       sort: sessionSort(value.sessionView.sort),
       archived: value.sessionView.archived === true,
+      mode: sidebarViewMode(value.sessionView.mode),
     },
     openProjectPaths: cleanPaths(value.openProjectPaths),
   });

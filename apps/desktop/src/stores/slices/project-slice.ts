@@ -251,6 +251,7 @@ export function createProjectSlice({
   | "moveSessionProject"
   | "deleteSession"
   | "setSessionSort"
+  | "setSessionViewMode"
   | "setSessionArchiveVisibility"
   | "setSessionView"
   | "setShowArchived"
@@ -604,6 +605,13 @@ export function createProjectSlice({
       persistCurrentSidebar(get);
     },
 
+    setSessionViewMode: (mode) => {
+      set((state) => ({
+        sessionView: { ...state.sessionView, mode },
+      }));
+      persistCurrentSidebar(get);
+    },
+
     setSessionArchiveVisibility: (show) => {
       set((state) => ({
         sessionView: { ...state.sessionView, archived: show, showArchived: show },
@@ -618,6 +626,9 @@ export function createProjectSlice({
       }
       if (view.sort || view.sortBy) {
         get().setSessionSort(view.sort ?? view.sortBy ?? get().sessionView.sort);
+      }
+      if (view.mode !== undefined) {
+        get().setSessionViewMode(view.mode);
       }
       if (view.archived !== undefined || view.showArchived !== undefined) {
         get().setSessionArchiveVisibility(
