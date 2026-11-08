@@ -103,6 +103,13 @@ export function RemoteHostsPage() {
       if (!alive.current || generation !== refreshGeneration.current) return;
       setHosts(result.hosts);
       setError(null);
+      // Auto-discover a connected Perch/Kimi host's model catalog so the agent
+      // picker and the composer model menu are ready before the user opens one.
+      for (const host of result.hosts) {
+        if (host.connected && host.backend && host.backend !== "racp") {
+          void useAppStore.getState().loadRemoteModelCatalog(host.hostKey);
+        }
+      }
     } catch (caught) {
       if (!alive.current || generation !== refreshGeneration.current) return;
       const message = t(remoteHostErrorKey(caught));
@@ -438,9 +445,11 @@ export function RemoteHostsPage() {
               <div className="settings-remote-host-copy">
                 <div className="settings-remote-host-name">{host.label}</div>
                 <div className="settings-remote-host-meta">
-                  {host.transport === "ssh"
-                    ? t("settings.remoteHosts.transportSsh")
-                    : host.url}
+                  {host.backend && host.backend !== "racp"
+                    ? t(`settings.remoteHosts.backend.${host.backend}`)
+                    : host.transport === "ssh"
+                      ? t("settings.remoteHosts.transportSsh")
+                      : host.url}
                 </div>
               </div>
               <span className="settings-remote-host-card-actions">
