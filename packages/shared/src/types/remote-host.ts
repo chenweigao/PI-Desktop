@@ -167,6 +167,10 @@ export type RemoteHostCreateSessionRequest = {
   title?: string;
   mode?: RacpSessionMode;
   permissionMode?: RacpPermissionMode;
+  /** Perch: which runtime (omp/codex/claude/qoder/…) hosts the session. */
+  provider?: string;
+  /** Perch: the model to run; must exist in the bridge catalog. */
+  model?: string;
 };
 export type RemoteHostCreateSessionResult = { session: SessionSummary };
 export type RemoteHostReconnectRequest = { hostKey: string };

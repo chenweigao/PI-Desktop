@@ -612,19 +612,25 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
           cwd: input.projectId,
           ...(input.title ? { title: input.title } : {}),
           ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
+          ...(input.provider ? { provider: input.provider } : {}),
+          ...(input.model ? { model: input.model } : {}),
         });
         changed();
         return {
           id: makeRemoteSessionId(input.hostKey, created.id),
           title: created.title, source: "remote" as const,
           remoteHostKey: input.hostKey, remoteHostLabel: entry.label,
-          mode: "code" as SessionSummary["mode"],
+          remoteProjectId: created.cwd,
+          remoteWorkspaceLabel: created.cwd.replace(/\/+$/, "").split("/").pop() ?? created.cwd,
+          mode: "agent" as SessionSummary["mode"],
           permissionMode: (created.permissionMode ?? "ask") as SessionSummary["permissionMode"],
-          thinkingLevel: "default" as SessionSummary["thinkingLevel"],
+          thinkingLevel: "off" as SessionSummary["thinkingLevel"],
+          ...(created.model ? { modelId: created.model } : {}),
+          ...(created.provider_id ? { providerId: created.provider_id } : {}),
           messageCount: 0,
           updatedAt: new Date((created.updated ?? 0) * 1000).toISOString(),
           createdAt: new Date((created.updated ?? 0) * 1000).toISOString(),
-          capabilities: { canPrompt: true, canStop: true, canRefresh: true },
+          capabilities: { canPrompt: true, canStop: true, canRefresh: true, canConfigureModel: true },
         };
       }
       const session = await catalog.createSession(input);

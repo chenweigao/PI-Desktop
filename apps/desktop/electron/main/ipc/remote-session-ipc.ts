@@ -62,6 +62,8 @@ export function registerRemoteSessionIpc(registrar: IpcRegistrar, getBoot: () =>
       hostKey: key, projectId, ...(title ? { title } : {}),
       ...(input.mode ? { mode: input.mode as RemoteHostCreateSessionRequest["mode"] } : {}),
       ...(input.permissionMode ? { permissionMode: input.permissionMode as RemoteHostCreateSessionRequest["permissionMode"] } : {}),
+      ...(typeof input.provider === "string" && input.provider.trim() ? { provider: text(input.provider, "provider", 64) } : {}),
+      ...(typeof input.model === "string" && input.model.trim() ? { model: text(input.model, "model", 200) } : {}),
     };
     return { session: await getBoot().createSession(parsed) };
   });
