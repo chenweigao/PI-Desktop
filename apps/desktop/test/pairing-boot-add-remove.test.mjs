@@ -228,8 +228,10 @@ test("list surface strips device tokens even when the record is on disk", async 
   });
   const listed = await boot.list();
   // The summary contains routing/status fields only; the device credential
-  // remains private. SSH metadata defaults to the direct transport.
+  // remains private. SSH metadata defaults to the direct transport; `backend`
+  // names the adapter kind (racp default; perch/kimi for the new channels).
   assert.deepEqual(Object.keys(listed[0]).sort(), [
+    "backend",
     "connected",
     "hostKey",
     "label",
@@ -237,6 +239,7 @@ test("list surface strips device tokens even when the record is on disk", async 
     "transport",
     "url",
   ]);
+  assert.equal(listed[0].backend, "racp");
   assert.equal(listed[0].transport, "direct");
   await boot.closeAll();
   await cleanup();

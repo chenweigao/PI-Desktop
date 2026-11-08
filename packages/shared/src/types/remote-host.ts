@@ -74,6 +74,10 @@ export type RemoteHostSummary = {
   status?: RemoteHostConnectionStatus;
   /** Absent on records written before the SSH bootstrap existed → `direct`. */
   transport?: RemoteHostTransport;
+  /** SSH fields for the edit form; never carries the secret. */
+  ssh?: { host: string; user?: string; port?: number; identityFile?: string };
+  /** The bridge backend kind (racp default; perch/kimi for the new channels). */
+  backend?: string;
 };
 
 /**

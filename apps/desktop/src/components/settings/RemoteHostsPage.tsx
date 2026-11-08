@@ -75,6 +75,9 @@ export function RemoteHostsPage() {
   const [checkResult, setCheckResult] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState("");
+  const [editUser, setEditUser] = useState("");
+  const [editPort, setEditPort] = useState("");
+  const [editIdentityFile, setEditIdentityFile] = useState("");
   const alive = useRef(true);
   const refreshGeneration = useRef(0);
   const showToast = useAppStore((state) => state.showToast);
@@ -91,6 +94,7 @@ export function RemoteHostsPage() {
   const pairAddActionRef = useRef<HTMLButtonElement>(null);
   const pendingAddFocus = useRef<HTMLButtonElement | null>(null);
   const sshIdentityFileInput = useRef<HTMLInputElement>(null);
+  const editIdentityFileInput = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
     const generation = ++refreshGeneration.current;
@@ -161,7 +165,19 @@ export function RemoteHostsPage() {
     const label = editLabel.trim();
     if (!label) return;
     try {
-      await api.updateRemoteHost(host.hostKey, { label });
+      const patch: { label: string; ssh?: Record<string, unknown> } = { label };
+      // Only SSH-backed hosts carry editable connection fields.
+      if (host.ssh) {
+        const ssh: Record<string, unknown> = {};
+        const user = editUser.trim();
+        const port = editPort.trim();
+        const identityFile = editIdentityFile.trim();
+        if (user) ssh.user = user;
+        if (port) ssh.port = Number(port);
+        if (identityFile) ssh.identityFile = identityFile;
+        if (Object.keys(ssh).length) patch.ssh = ssh;
+      }
+      await api.updateRemoteHost(host.hostKey, patch);
       setEditing(null);
       if (alive.current) await refresh();
     } catch (caught) {
@@ -237,6 +253,22 @@ export function RemoteHostsPage() {
         return;
       }
       setSshForm((prev) => ({ ...prev, identityFile }));
+    },
+    [showToast, t],
+  );
+
+  const handleEditIdentityFileChange = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const input = event.currentTarget;
+      const file = input.files?.[0] ?? null;
+      input.value = "";
+      if (!file) return;
+      const identityFile = api.getDroppedFilePath(file);
+      if (!identityFile) {
+        showToast(t("settings.remoteHosts.sshIdentityFileError"), { variant: "error" });
+        return;
+      }
+      setEditIdentityFile(identityFile);
     },
     [showToast, t],
   );
@@ -424,6 +456,9 @@ export function RemoteHostsPage() {
                 <Button variant="ghost" onClick={() => {
                   if (editing === host.hostKey) { setEditing(null); return; }
                   setEditLabel(host.label);
+                  setEditUser(host.ssh?.user ?? "");
+                  setEditPort(host.ssh?.port !== undefined ? String(host.ssh.port) : "");
+                  setEditIdentityFile(host.ssh?.identityFile ?? "");
                   setEditing(host.hostKey);
                 }}>
                   {t("settings.remoteHosts.edit")}
@@ -455,6 +490,62 @@ export function RemoteHostsPage() {
                       autoComplete="off"
                     />
                   </Field>
+                  {host.ssh ? (
+                    <>
+                      <div className="settings-remote-host-form-row">
+                        <Field label={t("settings.remoteHosts.sshUser")}>
+                          <Input
+                            value={editUser}
+                            onChange={(event) => setEditUser(event.target.value)}
+                            aria-label={t("settings.remoteHosts.sshUser")}
+                            autoComplete="off" autoCapitalize="off" spellCheck={false}
+                          />
+                        </Field>
+                        <Field label={t("settings.remoteHosts.sshPort")}>
+                          <Input
+                            value={editPort}
+                            onChange={(event) => setEditPort(event.target.value)}
+                            aria-label={t("settings.remoteHosts.sshPort")}
+                            inputMode="numeric" autoComplete="off" spellCheck={false}
+                          />
+                        </Field>
+                      </div>
+                      <Field label={t("settings.remoteHosts.sshIdentityFile")}>
+                        <div className="settings-remote-host-identity-file">
+                          <Input
+                            value={editIdentityFile}
+                            aria-label={t("settings.remoteHosts.sshIdentityFile")}
+                            autoComplete="off"
+                            readOnly
+                          />
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            onClick={() => editIdentityFileInput.current?.click()}
+                          >
+                            {t("settings.remoteHosts.sshIdentityFileChoose")}
+                          </Button>
+                          {editIdentityFile && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              onClick={() => setEditIdentityFile("")}
+                            >
+                              {t("settings.remoteHosts.sshIdentityFileClear")}
+                            </Button>
+                          )}
+                          <input
+                            ref={editIdentityFileInput}
+                            className="settings-remote-host-identity-file-input"
+                            type="file"
+                            tabIndex={-1}
+                            aria-hidden="true"
+                            onChange={handleEditIdentityFileChange}
+                          />
+                        </div>
+                      </Field>
+                    </>
+                  ) : null}
                   <div className="settings-remote-host-form-actions">
                     <Button type="button" variant="ghost" onClick={() => setEditing(null)}>{t("common.cancel")}</Button>
                     <Button type="submit" variant="primary" disabled={!editLabel.trim()}>

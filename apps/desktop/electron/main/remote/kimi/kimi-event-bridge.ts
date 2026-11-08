@@ -35,9 +35,9 @@ type SessionState = {
   lastEpoch: string | null;
   lastMessages: Map<string, UiMessage>;
   liveApprovals: Set<string>;
-  /** The turn whose outcome we already reported, so a settled snapshot for a
-   * turn we never saw busy still reports its terminal state exactly once. */
-  reportedTurnOutcome: string | null;
+  /** The snapshot seq whose terminal outcome we already reported, so a turn we
+   * never saw busy still reports once and a repeated reason is not replayed. */
+  reportedOutcomeSeq: number;
 };
 
 function toPermissionRequest(remoteSessionId: string, approval: KimiApproval): ToolPermissionRequest {
@@ -146,7 +146,7 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
   const stateFor = (hostSessionId: string): SessionState => {
     let state = sessions.get(hostSessionId);
     if (!state) {
-      state = { busy: false, lastSeq: -1, lastEpoch: null, lastMessages: new Map(), liveApprovals: new Set(), reportedTurnOutcome: null };
+      state = { busy: false, lastSeq: -1, lastEpoch: null, lastMessages: new Map(), liveApprovals: new Set(), reportedOutcomeSeq: -1 };
       sessions.set(hostSessionId, state);
     }
     return state;
@@ -241,23 +241,27 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
       }
 
       /* ---- settle: report the real outcome, exactly once per turn ----
-       * A turn that started and finished between two polls was never observed
-       * busy, so `settled` is false — but its terminal reason is durable. Report
-       * it once, keyed by the turn identity, instead of dropping it. */
+       * busy→idle is a real settle. A short turn that ran between polls was
+       * never observed busy: its durable last_turn_reason plus a strictly newer
+       * snapshot seq reports it once. A cold attach that is ALREADY busy never
+       * reports a previous turn's outcome as this turn's end. */
       const reason = session?.last_turn_reason;
-      const turnKey = session?.id ? `${session.id}:${reason ?? ""}` : null;
-      const shouldReport = reason && reason !== "running" && state.reportedTurnOutcome !== turnKey;
+      const terminalReason = reason && ["completed", "failed", "aborted", "cancelled", "stopped", "unknown", "interrupted"].includes(reason) ? reason : null;
+      const shouldReport = !busy && terminalReason !== null && seq > state.reportedOutcomeSeq;
       if (settled || shouldReport) {
         for (const ui of seen.values()) {
           if (ui.status === "streaming") {
             emitAgent(remoteSessionId, { type: "message_end", message: { ...ui, status: "complete" } });
           }
         }
-        // A live row from the turn that just ended is merged into the turn's
-        // final assistant message: message_end with replacesMessageId re-keys
-        // it, so the renderer keeps one row, not a stale partial plus a final
-        // duplicate. The final assistant row is the last one in this snapshot.
-        const finalAssistant = [...seen.values()].filter((ui) => ui.role === "assistant" && ui.status === "complete").at(-1);
+        // A live row from a COMPLETED turn merges into that turn's final
+        // assistant message (replacesMessageId re-keys it). A cancelled/failed
+        // turn has no durable final: the partial row is kept and ended, never
+        // replaced by an older turn's answer.
+        const completed = reason === "completed" || (settled && !reason);
+        const finalAssistant = completed
+          ? [...seen.values()].filter((ui) => ui.role === "assistant" && ui.status === "complete").at(-1)
+          : undefined;
         for (const [id, stale] of state.lastMessages) {
           if (!id.startsWith(`in-flight:${hostSessionId}:`)) continue;
           if (finalAssistant) {
@@ -275,7 +279,7 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
         } else if (settled || shouldReport) {
           emitAgent(remoteSessionId, { type: "agent_end", messageIds: [...seen.keys()] });
         }
-        if (turnKey) state.reportedTurnOutcome = turnKey;
+        if (terminalReason) state.reportedOutcomeSeq = seq;
       }
       state.lastMessages = seen;
       state.busy = busy;

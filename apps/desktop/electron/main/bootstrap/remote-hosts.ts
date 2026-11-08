@@ -432,6 +432,13 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       return await openHostOnce(realigned);
     }
   }
+  const sshSummaryOf = (record: RemoteHostRecord) => {
+    const ssh = sshMetadataOf(record);
+    if (!ssh) return undefined;
+    return { host: ssh.host, ...(ssh.user ? { user: ssh.user } : {}), ...(ssh.port !== undefined ? { port: ssh.port } : {}), ...(ssh.identityFile ? { identityFile: ssh.identityFile } : {}) };
+  };
+  const backendOf = (record: RemoteHostRecord) =>
+    isPerchRecord(record) ? "perch" : isKimiRecord(record) ? "kimi" : "racp";
   function summaryOf(record: RemoteHostRecord): RemoteHostSummary {
     if (isPerchRecord(record)) {
       const live = openedPerch.get(record.hostKey);
@@ -439,7 +446,8 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       const status: RemoteHostConnectionStatus = isLive ? "connected"
         : actionRequired.has(record.hostKey) ? "action-required" : "disconnected";
       return { hostKey: record.hostKey, label: record.label, url: record.url,
-        connected: isLive, status, transport: transportOf(record) };
+        connected: isLive, status, transport: transportOf(record),
+        ...(sshSummaryOf(record) ? { ssh: sshSummaryOf(record) } : {}), backend: backendOf(record) };
     }
     if (isKimiRecord(record)) {
       const live = openedKimi.get(record.hostKey);
@@ -447,14 +455,16 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       const status: RemoteHostConnectionStatus = isLive ? "connected"
         : actionRequired.has(record.hostKey) ? "action-required" : "disconnected";
       return { hostKey: record.hostKey, label: record.label, url: record.url,
-        connected: isLive, status, transport: transportOf(record) };
+        connected: isLive, status, transport: transportOf(record),
+        ...(sshSummaryOf(record) ? { ssh: sshSummaryOf(record) } : {}), backend: backendOf(record) };
     }
     const state = opened.get(record.hostKey)?.adapter.state();
     const status: RemoteHostConnectionStatus = state === "connected" || state === "connecting" || state === "reconnecting"
       ? state
       : state === "error" || actionRequired.has(record.hostKey) ? "action-required" : "disconnected";
     return { hostKey: record.hostKey, label: record.label, url: opened.get(record.hostKey)?.url ?? record.url,
-      connected: status === "connected", status, transport: transportOf(record) };
+      connected: status === "connected", status, transport: transportOf(record),
+      ...(sshSummaryOf(record) ? { ssh: sshSummaryOf(record) } : {}), backend: backendOf(record) };
   }
   async function addRecord(record: RemoteHostRecord): Promise<RemoteHostSummary> {
     assertOpen();
