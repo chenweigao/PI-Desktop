@@ -226,24 +226,33 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
       }
       case IPC.invoke.sessionConfigure: {
         const hostSessionId = hostIdFor(args);
-        const config = (args[1] ?? {}) as { modelId?: string };
+        const config = (args[1] ?? {}) as { modelId?: string; providerId?: string };
         if (!config.modelId) {
           throw capabilityUnavailable("perch sessions only support switching the model");
         }
-        // The bridge needs the model's provider, not just the id; resolve it
-        // from the live catalog so a switch never misroutes to the wrong agent.
         const summary = await getSummary(hostSessionId);
-        let provider = summary.provider_id;
-        if (!provider && options.listModels) {
-          const catalog = await options.listModels();
-          provider = catalog.find((m) => m.id === config.modelId)?.provider;
-        }
-        if (!provider) {
-          throw capabilityUnavailable(`cannot resolve a provider for model "${config.modelId}"`);
-        }
         if (summary.busy) {
           throw capabilityUnavailable("stop or finish the current task before switching the model");
         }
+        // Always resolve the model's identity from the live catalog — never
+        // reuse the session's current provider, or a cross-provider pick would
+        // be routed to the old one.
+        const catalog = options.listModels ? await options.listModels() : [];
+        const entry = catalog.find((m) => m.id === config.modelId
+          && (!config.providerId || m.provider === config.providerId));
+        if (!entry) {
+          throw capabilityUnavailable(`model "${config.modelId}" is not in this host's catalog`);
+        }
+        // A model belongs to one runtime; a session runs on another. Switching
+        // the model across runtimes would be a different agent, not a model
+        // switch — refuse instead of misrouting the session.
+        const sessionProvider = summary.provider ?? "omp";
+        if (entry.agent && entry.agent !== sessionProvider) {
+          throw capabilityUnavailable(
+            `"${config.modelId}" belongs to the ${entry.agent} runtime; create a new ${entry.agent} session instead of switching this ${sessionProvider} session`,
+          );
+        }
+        const provider = entry.provider;
         await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/model`, { provider, model: config.modelId });
         // Return the updated renderer summary so the composer reflects the switch.
         const updated = await getSummary(hostSessionId);

@@ -491,3 +491,65 @@ test("revision reset emits the old turn's terminal error BEFORE re-rendering, an
   const update = emitted.filter((e) => e.event)[updateAt];
   assert.equal(update.event.message.content, "final", "recovered row carries the final text");
 });
+
+test("model switch resolves the picked model's own provider, never the session's current one", async () => {
+  const bridge = await startBridge();
+  const posted = [];
+  // Extend the fake bridge: session summary on /sessions/s1, model catalog,
+  // and a model endpoint that records the posted provider.
+  const orig = bridge.server.listeners("request")[0];
+  bridge.server.removeAllListeners("request");
+  bridge.server.on("request", (req, res) => {
+    const url = new URL(req.url, "http://x");
+    const reply = (code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+    if (req.method === "GET" && url.pathname === "/sessions/s1") {
+      return reply(200, { id: "s1", provider: "omp", provider_id: "bailian", model: "kimi-k3", busy: false, updated: 1, revision: 1, pending: 0, interactions: [], messages: [] });
+    }
+    if (req.method === "GET" && url.pathname === "/models") {
+      return reply(200, { models: [
+        { id: "kimi-k3", provider: "bailian", name: "kimi-k3", agent: "omp" },
+        { id: "deepseek-v4-pro", provider: "aone", name: "DeepSeek V4 Pro", agent: "omp" },
+      ] });
+    }
+    if (req.method === "POST" && url.pathname === "/sessions/s1/model") {
+      let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { posted.push(JSON.parse(b)); reply(200, { ok: true }); });
+      return;
+    }
+    orig(req, res);
+  });
+  const backend = createPerchBackend({ hostKey: "dev", client: clientFor(bridge),
+    listModels: async () => [
+      { id: "kimi-k3", provider: "bailian", agent: "omp" },
+      { id: "deepseek-v4-pro", provider: "aone", agent: "omp" },
+    ] });
+  const sessionId = makeRemoteSessionId("dev", "s1");
+  await backend.invoke(IPC.invoke.sessionConfigure, [{ sessionId }, { modelId: "deepseek-v4-pro" }]);
+  assert.equal(posted[0].provider, "aone", "the picked model's own provider, not the session's bailian");
+  assert.equal(posted[0].model, "deepseek-v4-pro");
+  await new Promise((r) => bridge.server.close(r));
+});
+
+test("a model from another runtime is refused, not misrouted as a model switch", async () => {
+  const bridge = await startBridge();
+  const orig = bridge.server.listeners("request")[0];
+  bridge.server.removeAllListeners("request");
+  bridge.server.on("request", (req, res) => {
+    const url = new URL(req.url, "http://x");
+    const reply = (code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+    if (req.method === "GET" && url.pathname === "/sessions/s1") {
+      return reply(200, { id: "s1", provider: "omp", provider_id: "bailian", model: "kimi-k3", busy: false, updated: 1, revision: 1, pending: 0, interactions: [], messages: [] });
+    }
+    orig(req, res);
+  });
+  const backend = createPerchBackend({ hostKey: "dev", client: clientFor(bridge),
+    listModels: async () => [
+      { id: "kimi-k3", provider: "bailian", agent: "omp" },
+      { id: "gpt-6.1-sol", provider: "codex", agent: "codex" },
+    ] });
+  const sessionId = makeRemoteSessionId("dev", "s1");
+  await assert.rejects(
+    backend.invoke(IPC.invoke.sessionConfigure, [{ sessionId }, { modelId: "gpt-6.1-sol" }]),
+    /belongs to the codex runtime/,
+  );
+  await new Promise((r) => bridge.server.close(r));
+});

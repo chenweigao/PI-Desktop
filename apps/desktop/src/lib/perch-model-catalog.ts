@@ -23,6 +23,10 @@ export type PerchModelGroup = {
   providerDisplayName: string;
   providerSearchText: string;
   models: ModelInfo[];
+  /** The agent these models run on (omp/codex/claude/…). */
+  agent: string;
+  /** modelId → the real wire provider (e.g. "bailian"), for the switch call. */
+  wireProviders: Record<string, string>;
 };
 
 /** Synthetic provider id for one agent group; never a local provider id. */
@@ -86,6 +90,8 @@ export function groupPerchModelCatalog(
       provider,
       providerDisplayName: providerDisplayName(provider),
       providerSearchText: providerSearchText(provider),
+      agent,
+      wireProviders: Object.fromEntries(agentEntries.map((entry) => [entry.id, entry.provider])),
       models: agentEntries.map((entry) => ({
         modelId: entry.id,
         displayName: entry.name.trim() || entry.id,

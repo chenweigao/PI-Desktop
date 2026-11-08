@@ -19,6 +19,7 @@ export function remoteProjectForSession(session?: SessionSummary): RemoteProject
 export async function openRemoteProjectSession(
   { get, set, runtime }: StoreAccess & { runtime: SessionRuntime },
   project: RemoteProjectTarget,
+  options?: { provider?: string; model?: string },
 ): Promise<void> {
   const scope = `remote-project:${JSON.stringify([project.hostKey, project.projectId])}`;
   const pending = runtime.pendingNewSessionRequests.get(scope);
@@ -53,7 +54,9 @@ export async function openRemoteProjectSession(
       }
     }
     const result = await api.createRemoteSession({ hostKey: project.hostKey,
-      projectId: project.projectId, mode: "agent", permissionMode: "ask" });
+      projectId: project.projectId, mode: "agent", permissionMode: "ask",
+      ...(options?.provider ? { provider: options.provider } : {}),
+      ...(options?.model ? { model: options.model } : {}) });
     const session = safeSessionSummary(result.session);
     // Preserve a successful creation even if the user navigated away while it ran.
     set((current) => ({ sessions: [session, ...current.sessions.filter((item) => item.id !== session.id)] }));

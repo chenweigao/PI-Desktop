@@ -566,3 +566,32 @@
     animation: none;
   }
 }
+
+/* Perch runtime picker under a remote project group header. */
+.sidebar-remote-agent-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 2px 8px 6px 26px;
+}
+
+.sidebar-remote-agent-option {
+  border: 1px solid var(--ds-border-subtle, transparent);
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--ds-text-muted) 10%, transparent);
+  color: var(--ds-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 18px;
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.sidebar-remote-agent-option:hover {
+  color: var(--ds-text-primary);
+  background: color-mix(in oklab, var(--ds-text-muted) 18%, transparent);
+}
+
+.sidebar-remote-agent-option:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

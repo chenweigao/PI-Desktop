@@ -36,6 +36,11 @@ function remoteGroupDomId(key: string): string {
   return `sidebar-remote-project-${(hash >>> 0).toString(36)}`;
 }
 
+/** A Perch host catalog lists at least one runtime; RACP hosts have none. */
+function agentsAvailable(catalog: { agent: string }[] | undefined): boolean {
+  return catalog !== undefined;
+}
+
 /**
  * The same project/chat hierarchy as the local groups, keyed by (host,
  * project id) rather than local paths: chevron + name + host chip + parent
@@ -49,6 +54,7 @@ export function RemoteProjectGroups({ groups, renderSessions }: {
   const { t } = useTranslation();
   const [busy, setBusy] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [agentPicker, setAgentPicker] = useState<string | null>(null);
   const settings = useAppStore((state) => state.settings);
   // Remote groups carry the same running affordances as local projects, so a
   // collapsed host group does not hide live work either.
@@ -57,11 +63,17 @@ export function RemoteProjectGroups({ groups, renderSessions }: {
   const pendingPermissions = useAppStore((state) => state.pendingPermissions);
   const projectCollapsed = useAppStore((state) => state.projectCollapsed);
   const setProjectCollapsed = useAppStore((state) => state.setProjectCollapsed);
-  const createSession = async (project: SidebarRemoteGroup["project"]) => {
+  const remoteModelCatalogs = useAppStore((state) => state.remoteModelCatalogs);
+  const loadRemoteModelCatalog = useAppStore((state) => state.loadRemoteModelCatalog);
+  const createSession = async (project: SidebarRemoteGroup["project"], agent?: string) => {
     if (busy || !project.connected) return;
     setBusy(project.key);
+    setAgentPicker(null);
     try {
-      await useAppStore.getState().newSession({ remoteProject: project });
+      await useAppStore.getState().newSession({
+        remoteProject: project,
+        ...(agent ? { remoteProvider: agent } : {}),
+      });
     } catch (error) {
       useAppStore.getState().showToast(
         error instanceof Error ? error.message : String(error),
@@ -69,6 +81,20 @@ export function RemoteProjectGroups({ groups, renderSessions }: {
       );
     } finally {
       setBusy(null);
+    }
+  };
+  // The new-session affordance on a Perch host with several runtimes lets the
+  // user pick the agent explicitly instead of silently defaulting to OMP.
+  const requestCreate = (project: SidebarRemoteGroup["project"]) => {
+    const catalog = remoteModelCatalogs[project.hostKey];
+    const agents = catalog ? [...new Set(catalog.map((entry) => entry.agent).filter(Boolean))] : [];
+    if (agentsAvailable(catalog) && agents.length > 1) {
+      void loadRemoteModelCatalog(project.hostKey);
+      setAgentPicker(agentPicker === project.key ? null : project.key);
+    } else if (agentsAvailable(catalog) && agents.length === 1) {
+      void createSession(project, agents[0]);
+    } else {
+      void createSession(project);
     }
   };
   return <>{groups.map(({ project, sessions }) => {
@@ -132,12 +158,34 @@ export function RemoteProjectGroups({ groups, renderSessions }: {
             ? t("nav.newTask")
             : t("remote:offlineHost", { label: project.hostLabel })}
           ariaLabel={`${t("nav.newTask")}: ${groupTitle}`}
+          aria-expanded={agentPicker === project.key}
           disabled={busy !== null || !project.connected}
-          onClick={() => void createSession(project)}
+          onClick={() => requestCreate(project)}
         >
           <IconNewSession size={13} />
         </TooltipButton>
       </div>
+      {agentPicker === project.key ? (
+        <div className="sidebar-remote-agent-picker" role="group" aria-label={t("remote:chooseAgent")}>
+          {[
+            ...new Set(
+              (remoteModelCatalogs[project.hostKey] ?? [])
+                .map((entry) => entry.agent)
+                .filter(Boolean),
+            ),
+          ].map((agent) => (
+            <button
+              key={agent}
+              type="button"
+              className="sidebar-remote-agent-option"
+              disabled={busy !== null}
+              onClick={() => void createSession(project, agent)}
+            >
+              {agent}
+            </button>
+          ))}
+        </div>
+      ) : null}
       <div
         id={`${groupId}-sessions`}
         className={`sidebar-session-group-body project ${collapsed ? "collapsed" : ""}`}

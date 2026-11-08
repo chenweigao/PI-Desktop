@@ -659,7 +659,10 @@ export function createSessionSlice({
         options && "projectPath" in options ? undefined
           : remoteProjectForSession(activeSession)
       );
-      if (remoteProject) return openRemoteProjectSession({ get, set, runtime }, remoteProject);
+      if (remoteProject) return openRemoteProjectSession({ get, set, runtime }, remoteProject, {
+        ...(options?.remoteProvider ? { provider: options.remoteProvider } : {}),
+        ...(options?.remoteModel ? { model: options.remoteModel } : {}),
+      });
       if (!(options && "projectPath" in options) && isRemoteSession(activeSession ?? (
         get().activeSessionId?.startsWith("remote:") ? { id: get().activeSessionId! } : undefined
       ))) throw new Error(i18n.t("remote:REMOTE_PROJECT_REQUIRED"));

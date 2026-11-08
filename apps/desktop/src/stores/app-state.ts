@@ -231,6 +231,10 @@ export type AppState = {
   newSession: (options?: {
     projectPath?: string | null;
     remoteProject?: RemoteProjectTarget;
+    /** Perch: the runtime (agent) to host the new session; defaults to omp. */
+    remoteProvider?: string;
+    /** Perch: the model to run; must exist in the host's catalog. */
+    remoteModel?: string;
     /** Create an isolated session in its own git worktree (ADR 0329). */
     isolated?: boolean;
   }) => Promise<void>;

@@ -346,10 +346,20 @@ export function useComposerModelMenu({
         }
         return;
       }
+      // Carry the picked entry's full identity: the wire provider (e.g.
+      // "bailian") for the switch call, and the agent so a cross-runtime pick
+      // is caught before it pretends to be a model switch.
+      const group = remoteGroups.find((candidateGroup) =>
+        candidateGroup.models.some((model) => sameComposerModelId(model.modelId, nextModelId)),
+      );
+      const wireProvider = group?.wireProviders[
+        Object.keys(group.wireProviders).find((id) => sameComposerModelId(id, nextModelId)) ?? ""
+      ];
       try {
         await configureActiveSession({
           mode,
           modelId: nextModelId,
+          ...(wireProvider ? { providerId: wireProvider } : {}),
           thinkingLevel,
         });
         setQuery("");

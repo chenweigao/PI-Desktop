@@ -253,7 +253,7 @@ test("switching routes configureSession with the model id and the partial answer
   assert.equal(row.capabilities.canConfigureModel, true);
 });
 
-test("the menu's selection sends only the model id — the bridge resolves the provider", async () => {
+test("the menu's selection sends the model id plus its real wire provider", async () => {
   initialize();
   seed({ sessions: [perchSession], activeSessionId: perchSession.id, remoteModelCatalogs: { [hostKey]: catalog } });
   bridge(() => ({}));
@@ -263,8 +263,9 @@ test("the menu's selection sends only the model id — the bridge resolves the p
   const target = menu.flatModels.find((entry) => entry.model.modelId === "gpt-5.1-codex-mini");
   await menu.selectModel(target.provider, "gpt-5.1-codex-mini");
   assert.equal(configured.length, 1);
-  assert.deepEqual(configured[0], { mode: "agent", modelId: "gpt-5.1-codex-mini", thinkingLevel: "off" });
-  assert.ok(!("providerId" in configured[0]), "no local provider id crosses the wire");
+  // The wire provider is the catalog's real provider ("openai"), never the
+  // synthetic menu group id and never the session's previous provider.
+  assert.deepEqual(configured[0], { mode: "agent", modelId: "gpt-5.1-codex-mini", providerId: "openai", thinkingLevel: "off" });
 });
 
 test("a busy Perch session gets a clear refusal instead of a switch", async () => {
@@ -285,4 +286,26 @@ test("a RACP remote session never issues sessionConfigure from the store", async
   const calls = bridge(() => ({}));
   await useAppStore.getState().configureActiveSession({ mode: "agent", modelId: "gpt-5.1-codex-mini", thinkingLevel: "off" });
   assert.ok(!calls.some((call) => call.channel === IPC.invoke.sessionConfigure), "canConfigureModel: false stays fail-closed");
+});
+
+test("a new remote session carries the chosen agent through to createRemoteSession", async () => {
+  initialize();
+  const calls = [];
+  bridge((channel, input) => {
+    calls.push({ channel, input });
+    if (channel === IPC.invoke.remoteHostCreateSession) return { session: { ...perchSession, id: "remote:host1:new" } };
+    if (channel === IPC.invoke.sessionGet) return { session: { ...perchSession, id: "remote:host1:new", messages: [] } };
+    return {};
+  });
+  await useAppStore.getState().newSession({
+    remoteProject: { hostKey, projectId: "/srv/work", label: "work" },
+    remoteProvider: "codex",
+    remoteModel: "gpt-6.1-sol",
+  });
+  const create = calls.find((call) => call.channel === IPC.invoke.remoteHostCreateSession);
+  assert.ok(create, "createRemoteSession called");
+  // The invoke layer passes the request as the single positional argument.
+  const request = Array.isArray(create.input) ? create.input[0] : create.input;
+  assert.equal(request.provider, "codex");
+  assert.equal(request.model, "gpt-6.1-sol");
 });
