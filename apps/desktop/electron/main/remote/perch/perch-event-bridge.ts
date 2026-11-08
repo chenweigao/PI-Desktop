@@ -308,7 +308,23 @@ export function createPerchEventBridge(options: PerchEventBridgeOptions): PerchE
             emitAgent(remoteSessionId, { type: "message_end", message: { ...ui, status: "complete" } }, turnId);
           }
         }
+        // Rows that vanished from the snapshot (a streaming partial that the
+        // durable final replaced) must be ended too, or the renderer keeps a
+        // stale streaming row next to the final one. On a completed turn the
+        // vanished partial is merged into the turn's final assistant row.
         const turnState = snapshot.turnState;
+        const finalAssistant = turnState === "completed" || !turnState
+          ? [...seen.values()].filter((ui) => ui.role === "assistant" && ui.status === "complete").at(-1)
+          : undefined;
+        for (const [id, previous] of state.lastMessages) {
+          if (!seen.has(id) && previous.status === "streaming") {
+            if (finalAssistant) {
+              emitAgent(remoteSessionId, { type: "message_end", message: finalAssistant, replacesMessageId: id }, turnId);
+            } else {
+              emitAgent(remoteSessionId, { type: "message_end", message: { ...previous, status: "complete" } }, turnId);
+            }
+          }
+        }
         const errorText = snapshot.error ?? undefined;
         if (turnState === "unknown") {
           emitAgent(remoteSessionId, {

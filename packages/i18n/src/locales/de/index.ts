@@ -1495,6 +1495,7 @@ sklm: {
       "sshHostPlaceholder": "build-box.local",
       "sshUser": "Benutzer",
       "sshPort": "Port",
+      kimiServicePort: "Kimi service port",
       "sshIdentityFile": "Identitätsdatei",
       "sshIdentityFileChoose": "Datei auswählen",
       "sshIdentityFilePlaceholder": "Keine Datei ausgewählt",

@@ -435,7 +435,7 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
   const sshSummaryOf = (record: RemoteHostRecord) => {
     const ssh = sshMetadataOf(record);
     if (!ssh) return undefined;
-    return { host: ssh.host, ...(ssh.user ? { user: ssh.user } : {}), ...(ssh.port !== undefined ? { port: ssh.port } : {}), ...(ssh.identityFile ? { identityFile: ssh.identityFile } : {}) };
+    return { host: ssh.host, ...(ssh.user ? { user: ssh.user } : {}), ...(ssh.port !== undefined ? { port: ssh.port } : {}), ...(ssh.identityFile ? { identityFile: ssh.identityFile } : {}), ...(ssh.remotePort !== undefined ? { remotePort: ssh.remotePort } : {}) };
   };
   const backendOf = (record: RemoteHostRecord) =>
     isPerchRecord(record) ? "perch" : isKimiRecord(record) ? "kimi" : "racp";

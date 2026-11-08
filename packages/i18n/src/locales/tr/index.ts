@@ -1495,6 +1495,7 @@ sklm: {
       sshHostPlaceholder: "build-box.local",
       sshUser: "Kullanıcı",
       sshPort: "Bağlantı noktası",
+      kimiServicePort: "Kimi service port",
       sshIdentityFile: "Kimlik dosyası",
       sshIdentityFileChoose: "Dosya seç",
       sshIdentityFilePlaceholder: "Dosya seçilmedi",

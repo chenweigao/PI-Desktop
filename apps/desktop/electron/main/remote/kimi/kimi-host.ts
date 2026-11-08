@@ -99,7 +99,10 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
     if (!buildTransport) throw Object.assign(new Error("no ssh transport for kimi host"), { errorCode: "INVALID_ARGUMENT" });
     transport = buildTransport();
     const discover = options.discoverEndpoint ?? discoverKimiEndpoint;
-    endpoint = await discover((cmd, o) => transport!.exec(cmd, o));
+    // The Kimi service port comes from the host's SSH metadata (a real value
+    // the user can edit), not a hardcoded constant.
+    const servicePort = options.ssh.remotePort > 1 ? options.ssh.remotePort : undefined;
+    endpoint = await discover((cmd, o) => transport!.exec(cmd, o), servicePort);
     const { localPort } = await openForward(endpoint.port);
     const ep = endpoint;
     client = createKimiClient({

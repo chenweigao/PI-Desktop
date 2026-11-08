@@ -35,6 +35,8 @@ type SessionState = {
   lastEpoch: string | null;
   lastMessages: Map<string, UiMessage>;
   liveApprovals: Set<string>;
+  /** The prompt whose streaming row is live; ties the merge to this turn. */
+  livePromptId: string | null;
   /** The snapshot seq whose terminal outcome we already reported, so a turn we
    * never saw busy still reports once and a repeated reason is not replayed. */
   reportedOutcomeSeq: number;
@@ -146,7 +148,7 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
   const stateFor = (hostSessionId: string): SessionState => {
     let state = sessions.get(hostSessionId);
     if (!state) {
-      state = { busy: false, lastSeq: -1, lastEpoch: null, lastMessages: new Map(), liveApprovals: new Set(), reportedOutcomeSeq: -1 };
+      state = { busy: false, lastSeq: -1, lastEpoch: null, lastMessages: new Map(), liveApprovals: new Set(), livePromptId: null, reportedOutcomeSeq: -1 };
       sessions.set(hostSessionId, state);
     }
     return state;
@@ -168,6 +170,8 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
       const remoteSessionId = makeRemoteSessionId(hostKey, hostSessionId);
       const epoch = snapshot.epoch ?? state.lastEpoch;
       const seq = snapshot.as_of_seq ?? state.lastSeq;
+      // First-ever snapshot for this session: establishes the baseline only.
+      const isBaseline = state.lastSeq === -1 && state.reportedOutcomeSeq === -1;
       let restarted = false;
       if ((epoch !== state.lastEpoch && state.lastEpoch !== null) || seq < state.lastSeq) {
         restartedReset(state, remoteSessionId, emitAgent);
@@ -222,6 +226,7 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
       // collides with this one, and the settle step ends it explicitly.
       const inFlight = snapshot.in_flight_turn;
       const liveRowId = inFlight?.turn_id !== undefined ? `in-flight:${hostSessionId}:${inFlight.turn_id}` : null;
+      if (busy && inFlight?.current_prompt_id) state.livePromptId = inFlight.current_prompt_id;
       if (busy && inFlight && (inFlight.assistant_text || inFlight.thinking_text) && liveRowId) {
         const liveRow: UiMessage = {
           id: liveRowId,
@@ -247,20 +252,28 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
        * reports a previous turn's outcome as this turn's end. */
       const reason = session?.last_turn_reason;
       const terminalReason = reason && ["completed", "failed", "aborted", "cancelled", "stopped", "unknown", "interrupted"].includes(reason) ? reason : null;
-      const shouldReport = !busy && terminalReason !== null && seq > state.reportedOutcomeSeq;
+      // The first snapshot only establishes the baseline: a terminal reason
+      // from a turn this client never saw must not fire an outcome.
+      const shouldReport = !busy && !isBaseline && terminalReason !== null && seq > state.reportedOutcomeSeq;
       if (settled || shouldReport) {
         for (const ui of seen.values()) {
           if (ui.status === "streaming") {
             emitAgent(remoteSessionId, { type: "message_end", message: { ...ui, status: "complete" } });
           }
         }
-        // A live row from a COMPLETED turn merges into that turn's final
-        // assistant message (replacesMessageId re-keys it). A cancelled/failed
-        // turn has no durable final: the partial row is kept and ended, never
-        // replaced by an older turn's answer.
+        // A live row from a COMPLETED turn merges into that turn's own final
+        // assistant message — the row that follows this turn's prompt, not the
+        // last assistant row in history (which could be an older turn's). A
+        // cancelled/failed turn has no durable final: the partial is kept.
         const completed = reason === "completed" || (settled && !reason);
+        const seenRows = [...seen.values()];
+        const promptIndex = state.livePromptId
+          ? seenRows.findIndex((ui) => ui.role === "user" && ui.id === state.livePromptId)
+          : -1;
         const finalAssistant = completed
-          ? [...seen.values()].filter((ui) => ui.role === "assistant" && ui.status === "complete").at(-1)
+          ? (promptIndex >= 0
+              ? seenRows.slice(promptIndex + 1).find((ui) => ui.role === "assistant" && ui.status === "complete")
+              : seenRows.filter((ui) => ui.role === "assistant" && ui.status === "complete").at(-1))
           : undefined;
         for (const [id, stale] of state.lastMessages) {
           if (!id.startsWith(`in-flight:${hostSessionId}:`)) continue;
@@ -280,6 +293,7 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
           emitAgent(remoteSessionId, { type: "agent_end", messageIds: [...seen.keys()] });
         }
         if (terminalReason) state.reportedOutcomeSeq = seq;
+        state.livePromptId = null;
       }
       state.lastMessages = seen;
       state.busy = busy;

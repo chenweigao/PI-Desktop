@@ -78,6 +78,7 @@ export function RemoteHostsPage() {
   const [editUser, setEditUser] = useState("");
   const [editPort, setEditPort] = useState("");
   const [editIdentityFile, setEditIdentityFile] = useState("");
+  const [editServicePort, setEditServicePort] = useState("");
   const alive = useRef(true);
   const refreshGeneration = useRef(0);
   const showToast = useAppStore((state) => state.showToast);
@@ -182,6 +183,8 @@ export function RemoteHostsPage() {
         if (user) ssh.user = user;
         if (port) ssh.port = Number(port);
         if (identityFile) ssh.identityFile = identityFile;
+        const servicePort = editServicePort.trim();
+        if (servicePort) ssh.remotePort = Number(servicePort);
         if (Object.keys(ssh).length) patch.ssh = ssh;
       }
       await api.updateRemoteHost(host.hostKey, patch);
@@ -468,6 +471,7 @@ export function RemoteHostsPage() {
                   setEditUser(host.ssh?.user ?? "");
                   setEditPort(host.ssh?.port !== undefined ? String(host.ssh.port) : "");
                   setEditIdentityFile(host.ssh?.identityFile ?? "");
+                  setEditServicePort(host.ssh?.remotePort && host.ssh.remotePort > 1 ? String(host.ssh.remotePort) : "");
                   setEditing(host.hostKey);
                 }}>
                   {t("settings.remoteHosts.edit")}
@@ -518,6 +522,16 @@ export function RemoteHostsPage() {
                             inputMode="numeric" autoComplete="off" spellCheck={false}
                           />
                         </Field>
+                        {host.backend === "kimi" ? (
+                          <Field label={t("settings.remoteHosts.kimiServicePort")}>
+                            <Input
+                              value={editServicePort}
+                              onChange={(event) => setEditServicePort(event.target.value)}
+                              aria-label={t("settings.remoteHosts.kimiServicePort")}
+                              inputMode="numeric" autoComplete="off" spellCheck={false}
+                            />
+                          </Field>
+                        ) : null}
                       </div>
                       <Field label={t("settings.remoteHosts.sshIdentityFile")}>
                         <div className="settings-remote-host-identity-file">

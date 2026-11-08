@@ -1313,6 +1313,7 @@ export const ptBR = {
       sshHostPlaceholder: "build-box.local",
       sshUser: "Usuário",
       sshPort: "Porta",
+      kimiServicePort: "Kimi service port",
       sshIdentityFile: "Arquivo de chave privada SSH",
       sshIdentityFileChoose: "Selecionar arquivo",
       sshIdentityFilePlaceholder: "Nenhum arquivo selecionado",

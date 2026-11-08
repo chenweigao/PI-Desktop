@@ -46,19 +46,20 @@ function fail(message: string, errorCode: string): KimiBridgeError {
  * service is already running outside Perch's ownership. Newline-separated
  * POSIX shell, never `;`-joined.
  */
-export async function discoverKimiEndpoint(exec: KimiSshExec, port = 58627): Promise<KimiEndpoint> {
+export async function discoverKimiEndpoint(exec: KimiSshExec, port?: number): Promise<KimiEndpoint> {
+  const targetPort = port && port >= 1 && port <= 65535 ? port : 58627;
   const script = [
     `set -e`,
     `SERVICE="$HOME/.local/share/agent-workbench/native/local-agent-service.py"`,
     `if [ -f "$SERVICE" ]; then`,
-    `  python3 "$SERVICE" --agent kimi --port ${port} 2>/dev/null && exit 0`,
+    `  python3 "$SERVICE" --agent kimi --port ${targetPort} 2>/dev/null && exit 0`,
     `fi`,
     // The service is already running outside Perch's ownership: read the token
     // file directly. The port is the caller's configured one.
     `TOKEN_PATH="$HOME/.kimi-code/server.token"`,
     `if [ -f "$TOKEN_PATH" ]; then`,
     `  TOKEN=$(cat "$TOKEN_PATH" | tr -d '[:space:]')`,
-    `  printf '{"port": %d, "token": "%s"}' ${port} "$TOKEN"`,
+    `  printf '{"port": %d, "token": "%s"}' ${targetPort} "$TOKEN"`,
     `fi`,
   ].join("\n");
   const result = await exec(script, { timeoutMs: 30_000 });

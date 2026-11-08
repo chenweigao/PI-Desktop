@@ -1501,6 +1501,7 @@ sklm: {
       sshHostPlaceholder: "build-box.local",
       sshUser: "사용자",
       sshPort: "포트",
+      kimiServicePort: "Kimi service port",
       sshIdentityFile: "개인 키",
       sshIdentityFileChoose: "파일 선택",
       sshIdentityFilePlaceholder: "선택된 파일 없음",
