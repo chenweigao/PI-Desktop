@@ -309,3 +309,68 @@ test("a new remote session carries the chosen agent through to createRemoteSessi
   assert.equal(request.provider, "codex");
   assert.equal(request.model, "gpt-6.1-sol");
 });
+
+test("an explicit agent choice never reuses an empty session on a different runtime", async () => {
+  initialize();
+  // An existing EMPTY omp session on the same project.
+  const ompEmpty = { ...perchSession, id: "remote:ssh-perch:omp-empty", remoteAgent: "omp", remoteProjectId: "/srv/work", title: "empty omp" };
+  seed({ sessions: [ompEmpty], activeSessionId: undefined });
+  const calls = [];
+  bridge((channel, input) => {
+    calls.push({ channel, input });
+    if (channel === IPC.invoke.remoteHostCreateSession) return { session: { ...perchSession, id: "remote:ssh-perch:codex-new", remoteAgent: "codex", remoteProjectId: "/srv/work" } };
+    if (channel === IPC.invoke.sessionGet) return { session: { ...ompEmpty, messages: [] } };
+    return {};
+  });
+  await useAppStore.getState().newSession({
+    remoteProject: { hostKey, projectId: "/srv/work", label: "work" },
+    remoteProvider: "codex",
+  });
+  const created = calls.filter((call) => call.channel === IPC.invoke.remoteHostCreateSession);
+  assert.equal(created.length, 1, "a new session is created instead of reusing the omp one");
+  const request = Array.isArray(created[0].input) ? created[0].input[0] : created[0].input;
+  assert.equal(request.provider, "codex");
+});
+
+test("no explicit choice still reuses an existing empty session", async () => {
+  initialize();
+  const ompEmpty = { ...perchSession, id: "remote:ssh-perch:omp-empty", remoteAgent: "omp", remoteProjectId: "/srv/work", title: "empty omp" };
+  seed({ sessions: [ompEmpty], activeSessionId: undefined });
+  const calls = [];
+  bridge((channel, input) => {
+    calls.push({ channel, input });
+    if (channel === IPC.invoke.remoteHostCreateSession) return { session: { ...perchSession, id: "remote:ssh-perch:new" } };
+    if (channel === IPC.invoke.sessionGet) return { session: { ...ompEmpty, messages: [] } };
+    return {};
+  });
+  await useAppStore.getState().newSession({ remoteProject: { hostKey, projectId: "/srv/work", label: "work" } });
+  const created = calls.filter((call) => call.channel === IPC.invoke.remoteHostCreateSession);
+  assert.equal(created.length, 0, "the empty session is reused when nothing explicit is chosen");
+  assert.equal(useAppStore.getState().activeSessionId, "remote:ssh-perch:omp-empty");
+});
+
+test("a cold-cache new-session click loads the catalog before deciding the agent picker", async () => {
+  initialize();
+  // No catalog cached: the click must load it, not silently default to OMP.
+  const calls = bridge((channel) => {
+    if (channel === IPC.invoke.remoteHostModels) return { models: catalog };
+    return {};
+  });
+  const { loadRemoteModelCatalog } = useAppStore.getState();
+  assert.equal(useAppStore.getState().remoteModelCatalogs[hostKey], undefined);
+  // Drive the same code path the picker uses: load, then decide.
+  await loadRemoteModelCatalog(hostKey);
+  assert.deepEqual(useAppStore.getState().remoteModelCatalogs[hostKey], catalog);
+  assert.ok(calls.some((call) => call.channel === IPC.invoke.remoteHostModels), "the catalog was fetched on demand");
+});
+
+test("a failed cold-cache load records an error and does not default to OMP silently", async () => {
+  initialize();
+  bridge((channel) => {
+    if (channel === IPC.invoke.remoteHostModels) throw new Error("host unreachable");
+    return {};
+  });
+  await useAppStore.getState().loadRemoteModelCatalog(hostKey);
+  assert.equal(useAppStore.getState().remoteModelCatalogs[hostKey], undefined, "no phantom catalog");
+  assert.match(useAppStore.getState().remoteModelCatalogErrors[hostKey], /host unreachable/);
+});

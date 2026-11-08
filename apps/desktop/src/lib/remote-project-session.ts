@@ -32,7 +32,13 @@ export async function openRemoteProjectSession(
       && session.remoteHostKey === project.hostKey && session.remoteProjectId === project.projectId
       && !sessionIsArchived(session.id, state.sessionMeta),
     ).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
-    if (latest && sessionIsReusableEmpty(latest, {
+    // An explicit agent/model choice is never satisfied by reusing a session
+    // running a different one: picking Codex must not reopen an OMP session.
+    const explicitChoice = options?.provider ?? options?.model;
+    const matchesChoice = !explicitChoice || (latest
+      && (options?.provider === undefined || latest.remoteAgent === options.provider)
+      && (options?.model === undefined || latest.modelId === options.model));
+    if (latest && matchesChoice && sessionIsReusableEmpty(latest, {
       running: state.runningSessions[latest.id] === true,
       liveMessageCount: runtime.liveMessageCountForSession(latest.id, state),
       submitted: runtime.submittedComposerDrafts.has(latest.id),

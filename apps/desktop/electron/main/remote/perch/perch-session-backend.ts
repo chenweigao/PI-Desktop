@@ -209,6 +209,7 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
             // generic "模型" placeholder.
             ...(snap.model ? { modelId: snap.model } : {}),
             ...(snap.provider_id ? { providerId: snap.provider_id } : {}),
+            ...(snap.provider ? { remoteAgent: snap.provider } : {}),
             updatedAt: new Date((snap.updated ?? 0) * 1000).toISOString(),
             createdAt: new Date((snap.updated ?? 0) * 1000).toISOString(),
             capabilities: { canPrompt: true, canStop: true, canRefresh: true, canConfigureModel: true },

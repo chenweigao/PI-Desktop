@@ -43,6 +43,8 @@ export type SessionSummary = {
   remoteHostLabel?: string;
   remoteProjectId?: string;
   remoteWorkspaceLabel?: string;
+  /** The remote runtime (agent) hosting this session, e.g. omp/codex/claude. */
+  remoteAgent?: string;
   /** Native sessions expose only safe actions in the first continuation slice. */
   capabilities?: SessionCapabilities;
   /** Stable machine-readable reason why a native session cannot be continued. */

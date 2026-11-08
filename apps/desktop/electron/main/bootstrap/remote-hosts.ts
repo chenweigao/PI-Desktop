@@ -622,6 +622,7 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
           remoteHostKey: input.hostKey, remoteHostLabel: entry.label,
           remoteProjectId: created.cwd,
           remoteWorkspaceLabel: created.cwd.replace(/\/+$/, "").split("/").pop() ?? created.cwd,
+          remoteAgent: created.provider,
           mode: "agent" as SessionSummary["mode"],
           permissionMode: (created.permissionMode ?? "ask") as SessionSummary["permissionMode"],
           thinkingLevel: "off" as SessionSummary["thinkingLevel"],

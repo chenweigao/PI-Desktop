@@ -272,6 +272,7 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
         remoteHostLabel: options.label,
         remoteProjectId: session.cwd,
         remoteWorkspaceLabel: basename(session.cwd),
+        remoteAgent: session.provider,
         mode: "agent",
         permissionMode: "ask",
         thinkingLevel: "off",

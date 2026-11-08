@@ -84,12 +84,32 @@ export function RemoteProjectGroups({ groups, renderSessions }: {
     }
   };
   // The new-session affordance on a Perch host with several runtimes lets the
-  // user pick the agent explicitly instead of silently defaulting to OMP.
-  const requestCreate = (project: SidebarRemoteGroup["project"]) => {
-    const catalog = remoteModelCatalogs[project.hostKey];
+  // user pick the agent explicitly instead of silently defaulting to OMP. A
+  // cold cache loads the catalog first; a load failure surfaces as an error
+  // rather than a silent OMP default.
+  const requestCreate = async (project: SidebarRemoteGroup["project"]) => {
+    let catalog = remoteModelCatalogs[project.hostKey];
+    if (catalog === undefined) {
+      try {
+        await loadRemoteModelCatalog(project.hostKey);
+        catalog = useAppStore.getState().remoteModelCatalogs[project.hostKey];
+      } catch (error) {
+        useAppStore.getState().showToast(
+          error instanceof Error ? error.message : String(error),
+          { variant: "error" },
+        );
+        return;
+      }
+      if (catalog === undefined) {
+        const loadError = useAppStore.getState().remoteModelCatalogErrors[project.hostKey];
+        if (loadError) {
+          useAppStore.getState().showToast(loadError, { variant: "error" });
+          return;
+        }
+      }
+    }
     const agents = catalog ? [...new Set(catalog.map((entry) => entry.agent).filter(Boolean))] : [];
     if (agentsAvailable(catalog) && agents.length > 1) {
-      void loadRemoteModelCatalog(project.hostKey);
       setAgentPicker(agentPicker === project.key ? null : project.key);
     } else if (agentsAvailable(catalog) && agents.length === 1) {
       void createSession(project, agents[0]);
@@ -160,7 +180,7 @@ export function RemoteProjectGroups({ groups, renderSessions }: {
           ariaLabel={`${t("nav.newTask")}: ${groupTitle}`}
           aria-expanded={agentPicker === project.key}
           disabled={busy !== null || !project.connected}
-          onClick={() => requestCreate(project)}
+          onClick={() => void requestCreate(project)}
         >
           <IconNewSession size={13} />
         </TooltipButton>
