@@ -65,6 +65,8 @@ export interface RemoteHostsBoot {
   sessionSummaries(): SessionSummary[];
   sessions(hostKey: string): Promise<SessionSummary[]>;
   projects(hostKey: string): Promise<RacpProjectSummary[]>;
+  /** Perch: the bridge's combined model catalog; RACP hosts have none. */
+  models(hostKey: string): Promise<Array<{ id: string; provider: string; name: string; agent: string }>>;
   browseProjects(hostKey: string, path?: string): Promise<RemoteHostBrowseProjectsResult>;
   registerProject(hostKey: string, path: string): Promise<RacpProjectSummary & { path?: string }>;
   createSession(request: RemoteHostCreateSessionRequest): Promise<SessionSummary>;
@@ -498,6 +500,18 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
         return entry.host.projects();
       }
       return catalog.projects(hostKey);
+    },
+    async models(hostKey) {
+      const record = (await registry.list()).find((item) => item.hostKey === hostKey);
+      if (record && isPerchRecord(record)) {
+        await ensureReady(hostKey);
+        const entry = openedPerch.get(hostKey);
+        if (!entry) throw unavailable();
+        return entry.host.models();
+      }
+      // RACP hosts manage models on the Host; the renderer reads those from
+      // the synced provider catalog, so there is no separate live list.
+      return [];
     },
     async browseProjects(hostKey, path) {
       await ensureReady(hostKey);

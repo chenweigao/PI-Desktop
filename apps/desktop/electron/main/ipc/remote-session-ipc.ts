@@ -31,6 +31,9 @@ export function registerRemoteSessionIpc(registrar: IpcRegistrar, getBoot: () =>
   registrar.handle(IPC.invoke.remoteHostProjects, async (request: unknown) => {
     return { projects: await getBoot().projects(hostKey(object(request))) };
   });
+  registrar.handle(IPC.invoke.remoteHostModels, async (request: unknown) => {
+    return { models: await getBoot().models(hostKey(object(request))) };
+  });
   registrar.handle(IPC.invoke.remoteHostBrowseProjects, async (request: unknown) => {
     const input = object(request);
     const key = hostKey(input);

@@ -67,6 +67,7 @@ export type PerchPart =
 type SessionState = {
   busy: boolean;
   lastRevision: number;
+  lastTurnId: string | null;
   lastMessages: Map<string, UiMessage>;
   liveInteractions: Set<string>;
 };
@@ -96,86 +97,97 @@ function toPermissionRequest(remoteSessionId: string, interaction: PerchInteract
 }
 
 /**
- * Expand one Perch message into the renderer's UiMessage rows, preserving
- * part order. Text + thinking merge into one assistant/user row keyed by the
- * Perch message id; every tool_use is its own row keyed
- * `<messageId>#<tool_call_id>`, merged with the tool_result carrying the same
- * tool_call_id. A tool_use with no result is `running` only while the turn is
- * live; in settled history it is left without a status (completed row), never
- * a phantom spinner.
+ * Expand one Perch message into conversation rows (text/thinking). Tool calls
+ * are NOT handled here: Perch emits a tool_use and its tool_result as separate
+ * messages, so correlation must happen across the whole snapshot — see
+ * {@link perchSnapshotToUiMessages}. This single-message view keeps only the
+ * conversation row and is used by backend history reads for non-tool content.
  */
 export function perchMessageToUiMessages(message: PerchMessage, streaming: boolean): UiMessage[] {
-  const parts = message.content ?? [];
-  const createdAt = message.created_at ?? new Date().toISOString();
-  const results = new Map<string, Extract<PerchPart, { type: "tool_result" }>>();
-  for (const part of parts) {
-    if (part.type === "tool_result" && part.tool_call_id) results.set(part.tool_call_id, part);
-  }
-  const rows: UiMessage[] = [];
-  const text = parts.filter((p): p is Extract<PerchPart, { type: "text" }> => p.type === "text").map((p) => p.text).join("");
-  const thinking = parts.filter((p): p is Extract<PerchPart, { type: "thinking" }> => p.type === "thinking").map((p) => p.thinking).join("");
-  if (hasTextRow(message.role, hasTextRowCheck(parts), parts)) {
-    const row: UiMessage = {
-      id: message.id,
-      role: message.role === "user" ? "user" : message.role === "tool" ? "tool" : "assistant",
-      content: text,
-      createdAt,
-      status: streaming ? "streaming" : "complete",
-      ...(thinking ? { thinking } : {}),
-    };
-    rows.push(row);
-  }
-  let toolIndex = 0;
-  for (const part of parts) {
-    if (part.type !== "tool_use") continue;
-    const callId = part.tool_call_id ?? `${message.id}:tool-${toolIndex++}`;
-    const result = part.tool_call_id ? results.get(part.tool_call_id) : undefined;
-    const row: UiMessage = {
-      id: `${message.id}#${callId}`,
-      role: "tool",
-      content: result
-        ? (typeof result.output === "string" ? result.output : JSON.stringify(result.output, null, 2))
-        : "",
-      createdAt,
-      toolCallId: callId,
-      toolName: part.tool_name ?? "",
-      toolArgs: part.input,
-      status: result || !streaming ? "complete" : "streaming",
-      ...(result
-        ? { toolStatus: result.is_error ? "error" : "success", toolResult: result.output }
-        : streaming
-          ? { toolStatus: "running" as const }
-          : {}),
-    };
-    rows.push(row);
-  }
-  // A tool_result whose call id has no tool_use in this message still renders.
-  for (const part of parts) {
-    if (part.type !== "tool_result") continue;
-    const callId = part.tool_call_id ?? "";
-    if (callId && parts.some((p) => p.type === "tool_use" && p.tool_call_id === callId)) continue;
-    rows.push({
-      id: `${message.id}#${callId || `result-${rows.length}`}`,
-      role: "tool",
-      content: typeof part.output === "string" ? part.output : JSON.stringify(part.output, null, 2),
-      createdAt,
-      toolCallId: callId,
-      toolResult: part.output,
-      toolStatus: part.is_error ? "error" : "success",
-      status: "complete",
-    });
-  }
-  return rows;
+  return perchSnapshotToUiMessages([message], streaming);
 }
 
-function hasTextRowCheck(parts: PerchPart[]): boolean {
-  return parts.some((p) => p.type === "text" || p.type === "thinking");
-}
-function hasTextRow(role: string, hasText: boolean, parts: PerchPart[]): boolean {
-  if (role === "user") return true;
-  if (hasText) return true;
-  // An assistant message that is only tool calls gets no empty assistant row.
-  return !parts.some((p) => p.type === "tool_use" || p.type === "tool_result");
+/**
+ * Translate a whole snapshot's messages into renderer UiMessage rows.
+ *
+ * The native OMP contract delivers `tool_use` in an assistant message and the
+ * matching `tool_result` in a later `tool` message — correlating within one
+ * message silently drops results. Here tool rows are keyed by call identity
+ * across the entire snapshot: the first tool_use creates the row (id
+ * `<firstMessageId>#<callId>`, name + args preserved), and any later
+ * tool_result with the same call id updates that same row (content, status,
+ * readable output) instead of spawning a duplicate. Rows appear at the
+ * position of their first observation so ordering matches the transcript.
+ */
+export function perchSnapshotToUiMessages(messages: PerchMessage[], streaming: boolean): UiMessage[] {
+  const rows: UiMessage[] = [];
+  const toolRowByCallId = new Map<string, UiMessage>();
+  for (const message of messages) {
+    const parts = message.content ?? [];
+    const createdAt = message.created_at ?? new Date().toISOString();
+    const text = parts.filter((p): p is Extract<PerchPart, { type: "text" }> => p.type === "text").map((p) => p.text).join("");
+    const thinking = parts.filter((p): p is Extract<PerchPart, { type: "thinking" }> => p.type === "thinking").map((p) => p.thinking).join("");
+    const hasTools = parts.some((p) => p.type === "tool_use" || p.type === "tool_result");
+    if (message.role === "user" || text || thinking || !hasTools) {
+      rows.push({
+        id: message.id,
+        role: message.role === "user" ? "user" : message.role === "tool" ? "tool" : "assistant",
+        content: text,
+        createdAt,
+        status: streaming ? "streaming" : "complete",
+        ...(thinking ? { thinking } : {}),
+      });
+    }
+    let fallbackIndex = 0;
+    for (const part of parts) {
+      if (part.type === "tool_use") {
+        const callId = part.tool_call_id ?? `${message.id}:tool-${fallbackIndex++}`;
+        let row = toolRowByCallId.get(callId);
+        if (!row) {
+          row = {
+            id: `${message.id}#${callId}`,
+            role: "tool",
+            content: "",
+            createdAt,
+            toolCallId: callId,
+            toolName: part.tool_name ?? "",
+            toolArgs: part.input,
+            status: streaming ? "streaming" : "complete",
+            toolStatus: streaming ? "running" : undefined,
+          };
+          toolRowByCallId.set(callId, row);
+          rows.push(row);
+        } else {
+          // A later mention of the same call (e.g. refreshed metadata) updates
+          // the row in place; it never moves or duplicates.
+          if (part.tool_name && !row.toolName) row.toolName = part.tool_name;
+          if (part.input !== undefined && row.toolArgs === undefined) row.toolArgs = part.input;
+        }
+      } else if (part.type === "tool_result") {
+        const callId = part.tool_call_id ?? "";
+        let row = callId ? toolRowByCallId.get(callId) : undefined;
+        if (!row) {
+          // A result with no observed call still renders once, keyed stably.
+          row = {
+            id: `${message.id}#${callId || `result-${fallbackIndex++}`}`,
+            role: "tool",
+            content: "",
+            createdAt,
+            toolCallId: callId,
+            toolName: "",
+            status: "complete",
+          };
+          if (callId) toolRowByCallId.set(callId, row);
+          rows.push(row);
+        }
+        row.content = typeof part.output === "string" ? part.output : JSON.stringify(part.output, null, 2);
+        row.toolResult = part.output;
+        row.toolStatus = part.is_error ? "error" : "success";
+        row.status = "complete";
+      }
+    }
+  }
+  return rows;
 }
 
 /** Back-compat single-row view used by older tests: the first expanded row. */
@@ -191,7 +203,7 @@ export function createPerchEventBridge(options: PerchEventBridgeOptions): PerchE
   const stateFor = (hostSessionId: string): SessionState => {
     let state = sessions.get(hostSessionId);
     if (!state) {
-      state = { busy: false, lastRevision: -1, lastMessages: new Map(), liveInteractions: new Set() };
+      state = { busy: false, lastRevision: -1, lastTurnId: null, lastMessages: new Map(), liveInteractions: new Set() };
       sessions.set(hostSessionId, state);
     }
     return state;
@@ -212,16 +224,30 @@ export function createPerchEventBridge(options: PerchEventBridgeOptions): PerchE
       const state = stateFor(hostSessionId);
       const remoteSessionId = makeRemoteSessionId(hostKey, hostSessionId);
       const revision = snapshot.revision ?? state.lastRevision;
-      // A revision moving backwards means the bridge restarted: ids, epochs
-      // and revisions all reset. Drop the diff state so stale streaming rows
-      // and dead approval cards never survive into the new service.
+      // A revision moving backwards means the bridge restarted. The old turn
+      // must be terminated FIRST (the renderer still shows it running), then
+      // the diff baseline resets and every row is force-updated — the renderer
+      // ignores message_start for an id it already has, so a recovered row is
+      // pushed with message_update.
+      let restarted = false;
       if (revision < state.lastRevision) {
+        restarted = true;
+        if (state.busy) {
+          emitAgent(remoteSessionId, {
+            type: "error",
+            error: {
+              code: "TURN_UNKNOWN",
+              message: snapshot.error ?? "the bridge restarted while this turn was in flight; its outcome is unknown",
+            },
+          }, state.lastTurnId ?? null);
+        }
         state.lastMessages = new Map();
         state.liveInteractions = new Set();
         state.busy = false;
       }
       state.lastRevision = revision;
       const turnId = snapshot.turnId ?? null;
+      state.lastTurnId = turnId ?? state.lastTurnId;
 
       /* ---- approvals ---- */
       const now = Date.now() / 1000;
@@ -253,15 +279,25 @@ export function createPerchEventBridge(options: PerchEventBridgeOptions): PerchE
 
       /* ---- transcript diff (keyed by UiMessage id, order-preserving) ---- */
       const seen = new Map<string, UiMessage>();
-      for (const message of snapshot.messages ?? []) {
-        for (const ui of perchMessageToUiMessages(message, busy)) {
-          seen.set(ui.id, ui);
-          const previous = state.lastMessages.get(ui.id);
-          if (!previous) {
-            emitAgent(remoteSessionId, { type: "message_start", message: ui }, turnId);
-          } else if (JSON.stringify(previous) !== JSON.stringify(ui)) {
-            emitAgent(remoteSessionId, { type: "message_update", message: ui }, turnId);
-          }
+      // createdAt is display-only and unstable when a message lacks one, so it
+      // never decides whether a row changed.
+      const comparable = (m: UiMessage) => {
+        const { createdAt: _createdAt, ...rest } = m;
+        return JSON.stringify(rest);
+      };
+      for (const ui of perchSnapshotToUiMessages(snapshot.messages ?? [], busy)) {
+        seen.set(ui.id, ui);
+        const previous = state.lastMessages.get(ui.id);
+        if (!previous) {
+          // After a restart the renderer may already hold a row with this id
+          // from the dead epoch (e.g. a partial streaming text). message_start
+          // is ignored for known ids, so force the recovered content through
+          // message_update instead.
+          emitAgent(remoteSessionId, restarted
+            ? { type: "message_update", message: ui }
+            : { type: "message_start", message: ui }, turnId);
+        } else if (comparable(previous) !== comparable(ui)) {
+          emitAgent(remoteSessionId, { type: "message_update", message: ui }, turnId);
         }
       }
 

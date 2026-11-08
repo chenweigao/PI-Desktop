@@ -159,6 +159,7 @@ export type PerchSessionSummary = {
   completed: number; model: string; error: string | null;
   pending: number; cancelled: boolean; thinking: string | null;
   permissionMode?: string;
+  provider_id?: string;
   turnId?: string | null; turnState?: string | null;
   context?: { tokens: number | null; limit: number | null } | null;
   messages?: unknown[];

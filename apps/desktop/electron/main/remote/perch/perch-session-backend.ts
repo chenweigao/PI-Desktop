@@ -20,7 +20,7 @@ import type { RemoteBackend } from "../backend-router.js";
 import { parseRemoteSessionId, parseRemoteApprovalRequestId } from "../backend-router.js";
 import type { PerchClient, PerchReceipt, PerchSessionSummary } from "./perch-client.js";
 import { asReceipt, PerchBridgeError } from "./perch-client.js";
-import { perchMessageToUiMessages, type PerchMessage } from "./perch-event-bridge.js";
+import { perchSnapshotToUiMessages, type PerchMessage } from "./perch-event-bridge.js";
 
 /** PI renderer history paging: virtual cursors mapped to Perch `turns/before/epoch`. */
 type PerchHistoryCursor = { hostSessionId: string; before: number; epoch: string };
@@ -28,6 +28,8 @@ type PerchHistoryCursor = { hostSessionId: string; before: number; epoch: string
 export type PerchBackendOptions = {
   hostKey: string;
   client: PerchClient;
+  /** Model catalog lookup so a model switch names its provider correctly. */
+  listModels?: () => Promise<Array<{ id: string; provider: string; agent: string }>>;
   newRequestId?: () => string;
   log?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
 };
@@ -45,6 +47,7 @@ const HANDLED_CHANNELS: ReadonlySet<string> = new Set([
   IPC.invoke.agentStop,
   IPC.invoke.agentAbort,
   IPC.invoke.sessionGet,
+  IPC.invoke.sessionConfigure,
   IPC.invoke.sessionDelete,
   IPC.invoke.toolResolvePermission,
 ]);
@@ -114,8 +117,14 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
   const invoke = async (channel: string, args: readonly unknown[]): Promise<unknown> => {
     switch (channel) {
       case IPC.invoke.agentPrompt: {
-        const req = args[0] as { sessionId: string; content: string; idempotencyKey?: string };
-        const receipt = await submitPrompt(hostIdFor(args), req.content, req.idempotencyKey);
+        // The renderer's optimistic message id becomes the Perch requestId:
+        // the bridge keys the persisted user message by that id, so the
+        // snapshot's user row shares the optimistic row's id and updates it in
+        // place — no duplicate bubble, and legitimate repeated prompts (a new
+        // optimistic id each time) are never deduped away.
+        const req = args[0] as { sessionId: string; content: string; idempotencyKey?: string; messageId?: string };
+        const key = req.messageId ?? req.idempotencyKey;
+        const receipt = await submitPrompt(hostIdFor(args), req.content, key);
         return { accepted: receipt.status !== "failed", turnId: receipt.id };
       }
       case IPC.invoke.agentGetStatus: {
@@ -176,7 +185,7 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
           throw error;
         }
         const busy = snap.busy === true;
-        const messages = (snap.messages ?? []).flatMap((m) => perchMessageToUiMessages(m as PerchMessage, busy));
+        const messages = perchSnapshotToUiMessages((snap.messages ?? []) as PerchMessage[], busy);
         const history = snap.history;
         let messageStart = 0;
         const hasMoreBefore = history ? history.start > 0 : false;
@@ -196,9 +205,13 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
             mode: "agent",
             permissionMode: "ask",
             thinkingLevel: "off",
+            // The real remote model, so the composer shows it instead of a
+            // generic "模型" placeholder.
+            ...(snap.model ? { modelId: snap.model } : {}),
+            ...(snap.provider_id ? { providerId: snap.provider_id } : {}),
             updatedAt: new Date((snap.updated ?? 0) * 1000).toISOString(),
             createdAt: new Date((snap.updated ?? 0) * 1000).toISOString(),
-            capabilities: { canPrompt: true, canStop: true, canRefresh: true, canConfigureModel: false },
+            capabilities: { canPrompt: true, canStop: true, canRefresh: true, canConfigureModel: true },
             messageStart,
             messageEnd: messages.length,
             hasMoreBefore,
@@ -210,6 +223,31 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
         const hostSessionId = hostIdFor(args);
         await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/delete`, {});
         return { ok: true };
+      }
+      case IPC.invoke.sessionConfigure: {
+        const hostSessionId = hostIdFor(args);
+        const config = (args[1] ?? {}) as { modelId?: string };
+        if (!config.modelId) {
+          throw capabilityUnavailable("perch sessions only support switching the model");
+        }
+        // The bridge needs the model's provider, not just the id; resolve it
+        // from the live catalog so a switch never misroutes to the wrong agent.
+        const summary = await getSummary(hostSessionId);
+        let provider = summary.provider_id;
+        if (!provider && options.listModels) {
+          const catalog = await options.listModels();
+          provider = catalog.find((m) => m.id === config.modelId)?.provider;
+        }
+        if (!provider) {
+          throw capabilityUnavailable(`cannot resolve a provider for model "${config.modelId}"`);
+        }
+        if (summary.busy) {
+          throw capabilityUnavailable("stop or finish the current task before switching the model");
+        }
+        await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/model`, { provider, model: config.modelId });
+        // Return the updated renderer summary so the composer reflects the switch.
+        const updated = await getSummary(hostSessionId);
+        return { session: { id: (args[0] as { sessionId?: string }).sessionId ?? hostSessionId, modelId: updated.model, providerId: updated.provider_id } };
       }
       case IPC.invoke.toolResolvePermission: {
         const resolution = args[0] as { requestId: string; decision: string; value?: unknown };

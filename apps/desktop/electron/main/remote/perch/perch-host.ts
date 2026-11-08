@@ -20,6 +20,7 @@
 import { makeRemoteSessionId, type BackendRouter } from "../backend-router.js";
 import type { SshTunnelManager } from "../ssh-tunnel.js";
 import { reserveLocalPort, type SshTransport } from "../ssh-transport.js";
+import { IPC } from "@pi-desktop/shared";
 import type { RacpProjectSummary, RemoteHostBrowseProjectsResult, SessionSummary } from "@pi-desktop/shared";
 import {
   createPerchClient, discoverPerchEndpoint, PerchBridgeError,
@@ -56,16 +57,39 @@ export interface PerchHost {
   projects(): Promise<RacpProjectSummary[]>;
   /** List remote directories over SSH (the bridge has no browse endpoint). */
   browse(path?: string): Promise<RemoteHostBrowseProjectsResult>;
-  createSession(input: { cwd: string; model?: string; permissionMode?: string; title?: string }): Promise<PerchSessionSummary>;
+  /** Combined model catalog; each entry names the runtime (`agent`) that can serve it. */
+  models(): Promise<PerchModelEntry[]>;
+  setModel(hostSessionId: string, model: string, provider: string): Promise<unknown>;
+  createSession(input: { cwd: string; provider?: string; model?: string; permissionMode?: string; title?: string }): Promise<PerchSessionSummary>;
 }
 
-/** Map a PI permission mode onto the OMP create-time modes. */
+export type PerchModelEntry = {
+  id: string; provider: string; name: string;
+  contextWindow?: number; thinking?: string[]; agent: string;
+};
+
+/** Runtimes the Perch native bridge actually serves (perch NATIVE-AGENTS). */
+export const PERCH_PROVIDERS = new Set(["omp", "qoder", "qoderintl", "dsh", "codex", "claude"]);
+
+/** Map a PI permission mode onto each runtime's create-time modes. */
+export function perchPermissionModeFor(provider: string, value: string | undefined): string {
+  if (provider === "omp") {
+    if (value === "write" || value === "yolo" || value === "always-ask") return value;
+    if (value === "auto") return "write";
+    return "always-ask";
+  }
+  if (provider === "codex") {
+    if (value === "read-only" || value === "workspace-ask" || value === "workspace-auto" || value === "full-access") return value;
+    return "workspace-ask";
+  }
+  if (provider === "dsh") return "runtime-managed";
+  if (value === "default" || value === "acceptEdits" || value === "plan" || value === "dontAsk" || value === "auto" || value === "bypassPermissions") return value;
+  return "default";
+}
+
+/** Back-compat alias: OMP-only mapping used by the first adapter version. */
 export function perchPermissionMode(value: string | undefined): "always-ask" | "write" | "yolo" {
-  // PI's "ask" is the conservative default and equals OMP's always-ask;
-  // "auto" maps to write; anything unknown stays safe.
-  if (value === "write" || value === "yolo" || value === "always-ask") return value;
-  if (value === "auto") return "write";
-  return "always-ask";
+  return perchPermissionModeFor("omp", value) as "always-ask" | "write" | "yolo";
 }
 
 const basename = (path: string) => path.replace(/\/+$/, "").split("/").pop() ?? path;
@@ -85,6 +109,7 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
   let connected = false;
   let failures = 0;
   let sessionCache: PerchSessionSummary[] = [];
+  let lastInventoryKey = "";
   const lastSeenRevision = new Map<string, number>();
   let rediscovering: Promise<void> | null = null;
 
@@ -147,9 +172,13 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
 
   function registerSessionBackend(hostSessionId: string): void {
     if (!client) return;
+    const liveClient = client;
     options.router.registerBackend(
       makeRemoteSessionId(options.hostKey, hostSessionId),
-      createPerchBackend({ hostKey: options.hostKey, client, log }),
+      createPerchBackend({
+        hostKey: options.hostKey, client: liveClient, log,
+        listModels: () => liveClient.get("/models").then((c) => ((c as { models?: Array<{ id: string; provider: string; agent: string }> }).models ?? [])),
+      }),
     );
   }
 
@@ -162,15 +191,26 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
       sessionCache = sessions;
       failures = 0;
       connected = true;
+      // Notify the renderer when the session inventory changes (a new session
+      // created elsewhere, one archived/deleted, or the first sighting after
+      // connect): without this the sidebar only updates on a manual refresh.
+      const ids = sessions.map((s) => s.id).join("");
+      if (ids !== lastInventoryKey) {
+        lastInventoryKey = ids;
+        options.emit(IPC.event.sessionsChanged, { reason: "perch.sessions.changed" });
+      }
       for (const session of sessions) {
         const hostSessionId = session.id;
         if (session.busy || (session.pending ?? 0) > 0) anyBusy = true;
-        if (!lastSeenRevision.has(hostSessionId)) {
-          registerSessionBackend(hostSessionId);
-          lastSeenRevision.set(hostSessionId, session.revision);
-        }
+        // Registration and the diff baseline are separate concerns: a session
+        // we have never seen (including an idle one recovered after a bridge
+        // restart) must still be snapshotted once, or its state never reaches
+        // the renderer.
         const known = lastSeenRevision.get(hostSessionId);
-        if (!session.busy && (session.pending ?? 0) === 0 && session.revision === known) {
+        if (known === undefined) {
+          registerSessionBackend(hostSessionId);
+        }
+        if (known !== undefined && !session.busy && (session.pending ?? 0) === 0 && session.revision === known) {
           continue;
         }
         const snapshot = (await client.get(`/sessions/${encodeURIComponent(hostSessionId)}`)) as PerchSessionSummary & { revision?: number };
@@ -235,15 +275,20 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
         mode: "agent",
         permissionMode: "ask",
         thinkingLevel: "off",
+        // The real remote model so the composer shows it (e.g. kimi-k3), not a
+        // generic placeholder.
+        ...(session.model ? { modelId: session.model } : {}),
+        ...(session.provider_id ? { providerId: session.provider_id } : {}),
         messageCount: 0,
         updatedAt: new Date((session.updated ?? 0) * 1000).toISOString(),
         createdAt: new Date((session.updated ?? 0) * 1000).toISOString(),
         capabilities: {
           canPrompt: connected, canStop: connected, canRefresh: connected,
-          canConfigureModel: false, canAttach: false, canSteer: false,
+          // OMP/Qoder/Codex/Claude all accept a model switch while idle.
+          canConfigureModel: connected,
+          canAttach: false, canSteer: false,
           canEditMessages: false, canUseLocalTools: false, canUseTerminal: false,
           canReadWorkspace: false,
-          ...(connected ? {} : {}),
         },
         ...(connected ? {} : { readOnlyReason: "REMOTE_HOST_DISCONNECTED" }),
       }));
@@ -263,32 +308,50 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
       const buildTransport = options.buildTransport;
       if (!buildTransport) throw Object.assign(new Error("perch host is not connected"), { errorCode: "AGENT_UNAVAILABLE" });
       const transport = buildTransport();
-      const target = path && path.startsWith("/") ? path : "$HOME";
-      // Directories only, one per line, trailing slash — the project picker
-      // navigates directories. Shell-escape by single-quoting.
-      const safe = target.replace(/'/g, "'\\''");
-      const result = await transport.exec(
-        `cd -- '${safe}' 2>/dev/null && pwd && ls -1Ap | grep '/$' | head -200`,
-        { timeoutMs: 15_000 },
-      );
+      // No path: the remote home directory. `cd` with no arguments resolves
+      // $HOME inside the remote shell; quoting "$HOME" locally would send the
+      // literal string. A path must be absolute; anything else is rejected
+      // before it reaches a shell.
+      const useHome = !path;
+      if (!useHome && (!path!.startsWith("/") || path!.includes("\0"))) {
+        throw Object.assign(new Error("browse path must be an absolute remote directory"), { errorCode: "INVALID_ARGUMENT" });
+      }
+      const command = useHome
+        ? `cd && pwd && ls -1Ap 2>/dev/null | grep '/$' | head -200`
+        : `cd -- '${path!.replace(/'/g, "'\\''")}' && pwd && ls -1Ap 2>/dev/null | grep '/$' | head -200`;
+      const result = await transport.exec(command, { timeoutMs: 15_000 });
+      if (result.code !== 0) {
+        throw Object.assign(
+          new Error(`remote directory is not readable: ${result.stderr.trim().slice(-200) || `exit ${result.code}`}`),
+          { errorCode: "REMOTE_BROWSE_FAILED" },
+        );
+      }
       const lines = result.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
-      const resolved = lines[0] ?? target;
+      const resolved = lines[0];
+      if (!resolved || !resolved.startsWith("/")) {
+        throw Object.assign(new Error("remote browse returned no directory"), { errorCode: "REMOTE_BROWSE_FAILED" });
+      }
       const entries = lines.slice(1).map((name) => {
         const clean = name.replace(/\/$/, "");
         return { name: clean, path: `${resolved.replace(/\/$/, "")}/${clean}` };
       });
-      return { path: resolved, entries };
+      const parent = resolved === "/" ? undefined : resolved.replace(/\/+$/, "").replace(/\/[^/]*$/, "") || "/";
+      return { path: resolved, ...(parent ? { parent } : {}), entries };
     },
     async createSession(input) {
       const { client: live } = assertLive();
       if (!input.cwd.startsWith("/")) {
         throw Object.assign(new Error("perch session cwd must be a remote absolute path"), { errorCode: "INVALID_ARGUMENT" });
       }
+      const provider = input.provider ?? "omp";
+      if (!PERCH_PROVIDERS.has(provider)) {
+        throw Object.assign(new Error(`perch runtime "${provider}" is not available on this bridge`), { errorCode: "INVALID_ARGUMENT" });
+      }
       const created = (await live.post("/sessions", {
-        provider: "omp",
+        provider,
         cwd: input.cwd,
         ...(input.model ? { model: input.model } : {}),
-        permissionMode: perchPermissionMode(input.permissionMode),
+        permissionMode: perchPermissionModeFor(provider, input.permissionMode),
         ...(input.title ? { title: input.title } : {}),
       })) as PerchSessionSummary;
       registerSessionBackend(created.id);
@@ -296,6 +359,15 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
       sessionCache = [created, ...sessionCache.filter((s) => s.id !== created.id)];
       await pollOnce();
       return created;
+    },
+    async models() {
+      const { client: live } = assertLive();
+      const catalog = (await live.get("/models")) as { models?: PerchModelEntry[] };
+      return catalog.models ?? [];
+    },
+    async setModel(hostSessionId, model, provider) {
+      const { client: live } = assertLive();
+      return live.post(`/sessions/${encodeURIComponent(hostSessionId)}/model`, { provider, model });
     },
   };
 }

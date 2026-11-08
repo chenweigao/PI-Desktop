@@ -133,3 +133,29 @@ test("a completed turn records completed with its message ids", () => {
   assert.equal(state.latestTurnResults[session.id]?.status, "completed");
   assert.equal(state.latestTurnResults[session.id]?.turnId, "t9", "stable remote turn identity");
 });
+
+test("bridge restart reconciles the store: in-flight turn fails honestly, recovered text replaces the partial", async () => {
+  const listeners = setupStore();
+  const emit = (channel, payload) => {
+    if (channel === IPC.event.agentMessage) useAppStore.getState().handleAgentEvent(payload);
+    else listeners.get(channel)?.(payload);
+  };
+  const bridge = createPerchEventBridge({ hostKey: "dev", emit });
+  // Turn streaming a partial answer at revision 100.
+  bridge.applySnapshot("s1", { busy: true, turnId: "t-old", revision: 100, messages: [
+    { id: "a1", role: "assistant", created_at: "2026-01-01T00:00:00Z", content: [{ type: "text", text: "partial" }] },
+  ] });
+  assert.equal(useAppStore.getState().runningSessions[session.id], true);
+  assert.ok(useAppStore.getState().messages.some((m) => m.id === "a1" && m.content === "partial"));
+  // The bridge restarts: revision collapses, outcome unknown, recovered final text.
+  bridge.applySnapshot("s1", { busy: false, turnId: "t-old", turnState: "unknown", error: "服务中断", revision: 1, messages: [
+    { id: "a1", role: "assistant", created_at: "2026-01-01T00:00:00Z", content: [{ type: "text", text: "final" }] },
+  ] });
+  const state = useAppStore.getState();
+  assert.equal(state.runningSessions[session.id], false, "the renderer stops spinning");
+  assert.equal(state.latestTurnResults[session.id]?.status, "failed", "unknown outcome never reads as completed");
+  // message_update rides the renderer's throttle queue; let it flush.
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const row = useAppStore.getState().messages.find((m) => m.id === "a1");
+  assert.equal(row?.content, "final", "the recovered row replaced the partial text in place");
+});

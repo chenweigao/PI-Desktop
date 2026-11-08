@@ -2119,6 +2119,9 @@ export const api = {
     invoke<{ host: RemoteHostSummary }>(IPC.invoke.remoteHostReconnect, { hostKey }),
   remoteHostBrowseProjects: (hostKey: string, path?: string) =>
     invoke<RemoteHostBrowseProjectsResult>(IPC.invoke.remoteHostBrowseProjects, { hostKey, ...(path === undefined ? {} : { path }) }),
+  /** The Perch bridge's combined model catalog (each entry names its runtime). */
+  remoteHostModels: (hostKey: string) =>
+    invoke<{ models: { id: string; provider: string; name: string; agent: string }[] }>(IPC.invoke.remoteHostModels, { hostKey }),
   remoteHostProjects: (hostKey: string) =>
     invoke<RemoteHostProjectsResult>(IPC.invoke.remoteHostProjects, { hostKey }),
   registerRemoteProject: (hostKey: string, path: string) =>

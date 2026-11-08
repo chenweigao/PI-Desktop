@@ -382,15 +382,18 @@ test("multi-tool messages keep every call correlated with its result", async () 
   assert.notEqual(t2.status, "streaming");
 });
 
-test("a bridge restart (revision moving backwards) resets diff state", () => {
+test("a bridge restart (revision moving backwards) resets diff state and force-updates known ids", () => {
   const emitted = [];
   const bridge = createPerchEventBridge({ hostKey: "dev", emit: (c, p) => emitted.push(p) });
   bridge.applySnapshot("s1", { busy: true, revision: 10, messages: [{ id: "a", role: "assistant", content: [{ type: "text", text: "hi" }] }] });
   emitted.length = 0;
-  // Service restarted: revision restarts from a low number.
+  // Service restarted: revision restarts from a low number. The renderer may
+  // already hold this row id from the dead epoch, and ignores message_start
+  // for it — so the recovered content must arrive as message_update.
   bridge.applySnapshot("s1", { busy: false, revision: 1, turnState: "completed", messages: [{ id: "a", role: "assistant", content: [{ type: "text", text: "hi" }] }] });
-  const starts = emitted.filter((e) => e.event?.type === "message_start");
-  assert.equal(starts.length, 1, "message re-emitted fresh after restart, not diffed against the dead epoch");
+  const updates = emitted.filter((e) => e.event?.type === "message_update");
+  assert.ok(updates.length >= 1, "recovered rows pushed as message_update, not a start the renderer would drop");
+  assert.equal(updates[0].event.message.id, "a");
 });
 
 test("history paging walks backwards with epoch-checked cursors", async () => {
@@ -424,4 +427,67 @@ test("history paging walks backwards with epoch-checked cursors", async () => {
   assert.equal(second.messages[0].content, "older");
   assert.equal(second.hasMoreBefore, false);
   await new Promise((r) => bridge.server.close(r));
+});
+
+/* ---- Codex review 0a4130fd4 regression coverage ---- */
+
+test("tool_use and tool_result in SEPARATE messages correlate by call identity (native OMP contract)", async () => {
+  const { perchSnapshotToUiMessages } = await import("../electron/main/remote/perch/perch-event-bridge.ts");
+  const rows = perchSnapshotToUiMessages([
+    { id: "a1", role: "assistant", created_at: "2026-01-01T00:00:00Z", content: [
+      { type: "text", text: "checking" },
+      { type: "tool_use", tool_call_id: "c1", tool_name: "bash", input: { command: "pwd" } },
+    ] },
+    { id: "r1", role: "tool", created_at: "2026-01-01T00:00:01Z", content: [
+      { type: "tool_result", tool_call_id: "c1", output: "/srv/work", is_error: false },
+    ] },
+  ], false);
+  const toolRows = rows.filter((r) => r.role === "tool");
+  assert.equal(toolRows.length, 1, "one tool row, not a call row plus an orphan result row");
+  assert.equal(toolRows[0].id, "a1#c1", "row keyed by the call's first observation");
+  assert.equal(toolRows[0].toolName, "bash");
+  assert.deepEqual(toolRows[0].toolArgs, { command: "pwd" });
+  assert.equal(toolRows[0].content, "/srv/work", "readable output, not serialized JSON");
+  assert.equal(toolRows[0].toolStatus, "success");
+});
+
+test("a live call updates in place when its result arrives in a later snapshot", () => {
+  const emitted = [];
+  const bridge = createPerchEventBridge({ hostKey: "dev", emit: (c, p) => emitted.push(p) });
+  bridge.applySnapshot("s1", { busy: true, revision: 1, messages: [
+    { id: "a1", role: "assistant", content: [{ type: "tool_use", tool_call_id: "c1", tool_name: "bash", input: { command: "ls" } }] },
+  ] });
+  bridge.applySnapshot("s1", { busy: true, revision: 2, messages: [
+    { id: "a1", role: "assistant", content: [{ type: "tool_use", tool_call_id: "c1", tool_name: "bash", input: { command: "ls" } }] },
+    { id: "r1", role: "tool", content: [{ type: "tool_result", tool_call_id: "c1", output: "done" }] },
+  ] });
+  const starts = emitted.filter((e) => e.event?.type === "message_start" && e.event.message.toolCallId === "c1");
+  const updates = emitted.filter((e) => e.event?.type === "message_update" && e.event.message.toolCallId === "c1");
+  assert.equal(starts.length, 1, "one tool row created");
+  assert.equal(updates.length, 1, "the result updates the same row");
+  assert.equal(updates[0].event.message.toolStatus, "success");
+  assert.equal(updates[0].event.message.content, "done");
+});
+
+test("revision reset emits the old turn's terminal error BEFORE re-rendering, and the store reconciles", () => {
+  const emitted = [];
+  const bridge = createPerchEventBridge({ hostKey: "dev", emit: (c, p) => emitted.push(p) });
+  bridge.applySnapshot("s1", { busy: true, turnId: "old-turn", revision: 100, messages: [
+    { id: "a1", role: "assistant", content: [{ type: "text", text: "partial" }] },
+  ] });
+  emitted.length = 0;
+  // Restart: revision collapses, the old turn's outcome is unknown, and the
+  // recovered history carries the final text under the same message id.
+  bridge.applySnapshot("s1", { busy: false, turnId: "old-turn", turnState: "unknown", error: "托管服务曾中断", revision: 1, messages: [
+    { id: "a1", role: "assistant", content: [{ type: "text", text: "final" }] },
+  ] });
+  const events = emitted.filter((e) => e.event).map((e) => e.event.type);
+  const errorAt = events.indexOf("error");
+  const updateAt = events.indexOf("message_update");
+  assert.ok(errorAt >= 0, "terminal error emitted for the in-flight turn");
+  assert.ok(updateAt > errorAt, "content reconciliation happens after the terminal error");
+  const err = emitted.filter((e) => e.event)[errorAt];
+  assert.equal(err.event.error.code, "TURN_UNKNOWN");
+  const update = emitted.filter((e) => e.event)[updateAt];
+  assert.equal(update.event.message.content, "final", "recovered row carries the final text");
 });
