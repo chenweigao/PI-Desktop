@@ -14,9 +14,9 @@
  * by tool_call_id). Turn lifecycle maps to agent_start / agent_end, with
  * failures reported as error events, never a blanket completion.
  */
-import { IPC, type AgentEventEnvelope, type RemoteInteractionUpdate, type ToolPermissionRequest, type UiMessage } from "@pi-desktop/shared";
+import { IPC, type AgentEventEnvelope, type AskToolRequest, type RemoteInteractionUpdate, type ToolPermissionRequest, type UiMessage } from "@pi-desktop/shared";
 import { makeRemoteApprovalRequestId, makeRemoteSessionId } from "../backend-router.js";
-import type { KimiApproval, KimiMessage, KimiPart, KimiSnapshot } from "./kimi-client.js";
+import type { KimiApproval, KimiMessage, KimiPart, KimiQuestion, KimiSnapshot } from "./kimi-client.js";
 
 export type KimiEventBridgeOptions = {
   hostKey: string;
@@ -47,6 +47,19 @@ function toPermissionRequest(remoteSessionId: string, approval: KimiApproval): T
     argsPreview: input ?? null,
     risk: "medium",
     reason: approval.action ?? "",
+  };
+}
+
+function toAskRequest(remoteSessionId: string, question: KimiQuestion): AskToolRequest {
+  return {
+    requestId: makeRemoteApprovalRequestId(remoteSessionId, question.question_id),
+    sessionId: remoteSessionId,
+    toolCallId: "",
+    questions: (question.questions ?? []).map((item) => ({
+      question: item.question,
+      options: (item.options ?? []).map((option) => ({ label: option.label, ...(option.description ? { description: option.description } : {}) })),
+      ...(item.multi_select ? { multiSelect: true } : {}),
+    })),
   };
 }
 
@@ -173,7 +186,7 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
       const snapshotUpdate: RemoteInteractionUpdate = {
         kind: "snapshot", sessionId: remoteSessionId,
         permissions: open.map((item) => toPermissionRequest(remoteSessionId, item)),
-        asks: [],
+        asks: (snapshot.pending_questions ?? []).map((item) => toAskRequest(remoteSessionId, item)),
       };
       emit(IPC.event.remoteInteractions, snapshotUpdate);
 
@@ -185,7 +198,7 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
       }
       const settled = state.busy && !busy;
 
-      /* ---- transcript diff ---- */
+      /* ---- transcript diff (including the in-flight streaming tail) ---- */
       const seen = new Map<string, UiMessage>();
       for (const ui of kimiSnapshotToUiMessages(snapshot.messages?.items ?? [], busy)) {
         seen.set(ui.id, ui);
@@ -196,6 +209,26 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
             : { type: "message_start", message: ui });
         } else if (JSON.stringify({ ...previous, createdAt: "" }) !== JSON.stringify({ ...ui, createdAt: "" })) {
           emitAgent(remoteSessionId, { type: "message_update", message: ui });
+        }
+      }
+      // The in-flight turn's streaming text is not yet a durable message; show
+      // it as a live assistant row so the running turn is visible.
+      const inFlight = snapshot.in_flight_turn;
+      if (busy && inFlight && (inFlight.assistant_text || inFlight.thinking_text)) {
+        const liveRow: UiMessage = {
+          id: `in-flight:${hostSessionId}`,
+          role: "assistant",
+          content: inFlight.assistant_text ?? "",
+          ...(inFlight.thinking_text ? { thinking: inFlight.thinking_text } : {}),
+          createdAt: new Date().toISOString(),
+          status: "streaming",
+        };
+        seen.set(liveRow.id, liveRow);
+        const previous = state.lastMessages.get(liveRow.id);
+        if (!previous) {
+          emitAgent(remoteSessionId, { type: "message_start", message: liveRow });
+        } else if (previous.content !== liveRow.content || previous.thinking !== liveRow.thinking) {
+          emitAgent(remoteSessionId, { type: "message_update", message: liveRow });
         }
       }
 
@@ -209,6 +242,8 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
         const reason = session?.last_turn_reason;
         if (reason === "failed") {
           emitAgent(remoteSessionId, { type: "error", error: { code: "TURN_FAILED", message: "remote turn failed" } });
+        } else if (reason === "aborted" || reason === "cancelled" || reason === "stopped") {
+          emitAgent(remoteSessionId, { type: "error", error: { code: "TURN_ABORTED", message: "turn stopped" } });
         } else if (reason === "unknown" || reason === "interrupted") {
           emitAgent(remoteSessionId, { type: "error", error: { code: "TURN_UNKNOWN", message: "the turn's outcome is unknown" } });
         } else {

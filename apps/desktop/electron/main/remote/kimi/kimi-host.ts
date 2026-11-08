@@ -67,6 +67,9 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
   let sessionCache: KimiSession[] = [];
   let lastInventoryKey = "";
   const lastSeenSeq = new Map<string, number>();
+  // Per-session "was busy/pending last poll" so a just-settled session is read
+  // once more (its final snapshot) instead of being skipped on the idle row.
+  const lastActive = new Map<string, boolean>();
   // Kimi carries the model on the next prompt; shared across every backend
   // registered for this host so a create-time model and a later switch agree.
   const sessionModels = new Map<string, string>();
@@ -148,9 +151,13 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
         if (running || (session.pending_interaction && session.pending_interaction !== "none")) anyBusy = true;
         const known = lastSeenSeq.get(hostSessionId);
         if (known === undefined) registerSessionBackend(hostSessionId);
-        // A Kimi session carries no revision on the list row; poll the snapshot
-        // for any session that is busy, pending, or never snapshotted.
-        if (!running && (session.pending_interaction ?? "none") === "none" && known !== undefined) {
+        // Skip a snapshot only when the session was ALREADY idle with no
+        // pending interaction AND we have a snapshot baseline — a session that
+        // just settled must be read once more so its final state and messages
+        // reach the renderer; a short turn that started and finished between
+        // polls must not be invisible.
+        const wasActive = lastActive.get(hostSessionId) === true;
+        if (!running && (session.pending_interaction ?? "none") === "none" && known !== undefined && !wasActive) {
           continue;
         }
         const snapshot = (await client.get(`/api/v1/sessions/${encodeURIComponent(hostSessionId)}/snapshot`)) as KimiSnapshot;
@@ -158,6 +165,9 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
         if (snapshot.session && (snapshot.session.main_turn_active ?? snapshot.session.busy)) anyBusy = true;
         lastSeenSeq.set(hostSessionId, seq);
         bridge.applySnapshot(hostSessionId, snapshot);
+        // Track the post-read activity: only a session that is idle AND was
+        // idle last time is skippable next round.
+        lastActive.set(hostSessionId, running || ((session.pending_interaction ?? "none") !== "none"));
       }
     } catch (error) {
       if (error instanceof KimiBridgeError && error.errorCode === "KIMI_AUTH_STALE" && !closed) {
@@ -182,8 +192,13 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
     async connect() {
       await openClient();
       closed = false;
+      // The first poll must succeed for the host to count as connected; a bad
+      // token or a dead service must not surface as online.
       await pollOnce();
-      connected = true;
+      if (!connected) {
+        await closeClient();
+        throw Object.assign(new Error("kimi host did not answer its first poll"), { errorCode: "AGENT_UNAVAILABLE" });
+      }
       schedulePoll(true);
     },
     async close() {

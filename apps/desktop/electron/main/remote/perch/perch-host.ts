@@ -243,8 +243,13 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
     async connect() {
       await openClient();
       closed = false;
+      // The first poll must succeed for the host to count as connected; a bad
+      // token or a dead service must not surface as online.
       await pollOnce();
-      connected = true;
+      if (!connected) {
+        await closeClient();
+        throw Object.assign(new Error("perch host did not answer its first poll"), { errorCode: "AGENT_UNAVAILABLE" });
+      }
       schedulePoll(true);
     },
     async close() {

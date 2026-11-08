@@ -151,12 +151,20 @@ export type KimiApproval = {
   tool_input_display?: unknown; agent_id?: string;
 };
 
+export type KimiQuestionOption = { id: string; label: string; description?: string };
+export type KimiQuestionItem = {
+  id: string; question: string; header?: string; body?: string;
+  options?: KimiQuestionOption[]; multi_select?: boolean; allow_other?: boolean;
+};
+export type KimiQuestion = { question_id: string; questions: KimiQuestionItem[] };
+
 export type KimiSnapshot = {
   as_of_seq?: number; epoch?: string;
   session?: KimiSession;
   messages?: { items?: KimiMessage[]; has_more?: boolean };
   in_flight_turn?: { turn_id?: number; assistant_text?: string; thinking_text?: string; current_prompt_id?: string };
   pending_approvals?: KimiApproval[];
+  pending_questions?: KimiQuestion[];
 };
 
 export type KimiMessage = {

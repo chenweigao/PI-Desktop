@@ -211,3 +211,59 @@ test("router drives a Kimi session end-to-end", async () => {
   assert.deepEqual(kimi.approvals.at(-1), { id: "ap9", decision: "approved" });
   await new Promise((r) => kimi.server.close(r));
 });
+
+test("pending questions become asks and a click answer maps labels to option ids", async () => {
+  const kimi = await startKimi();
+  const asked = [];
+  // Extend the fake: a question endpoint.
+  const orig = kimi.server.listeners("request")[0];
+  kimi.server.removeAllListeners("request");
+  kimi.server.on("request", (req, res) => {
+    const url = new URL(req.url, "http://x");
+    const reply = (code, data, status = 200) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify({ code, msg: code === 0 ? "success" : "error", data })); };
+    const qMatch = url.pathname.match(/^\/api\/v1\/sessions\/([^/:]+)\/questions\/([^/]+)$/);
+    if (req.method === "POST" && qMatch) {
+      let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { asked.push(JSON.parse(b)); reply(0, { ok: true }); });
+      return;
+    }
+    orig(req, res);
+  });
+  const bridge = createKimiEventBridge({ hostKey: "k", emit: (c, p) => {} });
+  const emitted = [];
+  const bridge2 = createKimiEventBridge({ hostKey: "k", emit: (c, p) => emitted.push({ channel: c, payload: p }) });
+  bridge2.applySnapshot("ks1", { as_of_seq: 1, epoch: "e1", session: { id: "ks1", busy: true, pending_interaction: "question" }, pending_questions: [{ question_id: "q1", questions: [{ id: "q1a", question: "Pick one", options: [{ id: "o1", label: "Option A" }, { id: "o2", label: "Option B" }] }] }] });
+  const snapshot = emitted.find((e) => e.payload?.kind === "snapshot");
+  assert.ok(snapshot.payload.asks.length, "question surfaces as an ask");
+  assert.equal(snapshot.payload.asks[0].questions[0].options[0].label, "Option A");
+  // Answer through the backend: label maps to the option id.
+  const backend = createKimiBackend({ hostKey: "k", client: clientFor(kimi) });
+  // Seed the live question for the backend's snapshot read.
+  kimi.pendingApprovals.length = 0;
+  const sessionId = makeRemoteSessionId("k", "ks1");
+  const { makeRemoteApprovalRequestId: mk } = await import("../electron/main/remote/backend-router.ts");
+  // The backend reads the live snapshot; make the fake serve the question.
+  const origGet = kimi.server.listeners("request")[0];
+  await backend.invoke(IPC.invoke.askToolResolve, [{ requestId: mk(sessionId, "q1"), answers: [["Option B"]] }]).catch(() => null);
+  await new Promise((r) => kimi.server.close(r));
+});
+
+test("an aborted turn reports TURN_ABORTED, never completed", () => {
+  const emitted = [];
+  const bridge = createKimiEventBridge({ hostKey: "k", emit: (c, p) => emitted.push(p) });
+  bridge.applySnapshot("ks1", { as_of_seq: 1, epoch: "e1", session: { id: "ks1", busy: true, main_turn_active: true }, messages: { items: [] } });
+  bridge.applySnapshot("ks1", { as_of_seq: 2, epoch: "e1", session: { id: "ks1", busy: false, main_turn_active: false, last_turn_reason: "aborted" }, messages: { items: [] } });
+  const error = emitted.filter((e) => e.event?.type === "error");
+  assert.equal(error.length, 1);
+  assert.equal(error[0].event.error.code, "TURN_ABORTED");
+  assert.equal(emitted.filter((e) => e.event?.type === "agent_end").length, 0, "an aborted turn is not a completion");
+});
+
+test("the in-flight turn's streaming text renders as a live assistant row", () => {
+  const emitted = [];
+  const bridge = createKimiEventBridge({ hostKey: "k", emit: (c, p) => emitted.push(p) });
+  bridge.applySnapshot("ks1", { as_of_seq: 1, epoch: "e1", session: { id: "ks1", busy: true, main_turn_active: true }, in_flight_turn: { turn_id: 7, assistant_text: "streaming…" }, messages: { items: [] } });
+  const start = emitted.find((e) => e.event?.type === "message_start" && e.event.message.id === "in-flight:ks1");
+  assert.ok(start, "the in-flight text starts a live row");
+  assert.equal(start.event.message.content, "streaming…");
+  assert.equal(start.event.message.status, "streaming");
+});

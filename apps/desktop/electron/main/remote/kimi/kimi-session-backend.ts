@@ -19,6 +19,10 @@ import { parseRemoteSessionId, parseRemoteApprovalRequestId } from "../backend-r
 import type { KimiClient, KimiSession, KimiSnapshot } from "./kimi-client.js";
 import { KimiBridgeError } from "./kimi-client.js";
 import { kimiSnapshotToUiMessages } from "./kimi-event-bridge.js";
+import type { KimiMessage } from "./kimi-client.js";
+
+/** PI renderer history paging: virtual cursors mapped to Kimi `before_id`. */
+type KimiHistoryCursor = { hostSessionId: string; beforeId: string };
 
 export type KimiBackendOptions = {
   hostKey: string;
@@ -46,6 +50,7 @@ const HANDLED_CHANNELS: ReadonlySet<string> = new Set([
   IPC.invoke.sessionConfigure,
   IPC.invoke.sessionDelete,
   IPC.invoke.toolResolvePermission,
+  IPC.invoke.askToolResolve,
 ]);
 
 function hostIdFor(args: readonly unknown[]): string {
@@ -67,6 +72,8 @@ export function createKimiBackend(options: KimiBackendOptions): RemoteBackend {
   // Kimi switches the model per prompt, not per session: a configure call
   // records the choice and the next prompt carries it.
   const pendingModel = options.sessionModels ?? new Map<string, string>();
+  let nextHistoryCursor = 2 ** 48;
+  const historyCursors = new Map<number, KimiHistoryCursor>();
 
   const getSession = async (hostSessionId: string): Promise<KimiSession> =>
     (await client.get(`/api/v1/sessions/${encodeURIComponent(hostSessionId)}`)) as KimiSession;
@@ -126,11 +133,35 @@ export function createKimiBackend(options: KimiBackendOptions): RemoteBackend {
       }
       case IPC.invoke.sessionGet: {
         const hostSessionId = hostIdFor(args);
-        const remoteSessionId = (args[0] as { id?: string; sessionId?: string }).id
-          ?? (args[0] as { sessionId?: string }).sessionId ?? "";
-        const [session, snapshot] = await Promise.all([getSession(hostSessionId), getSnapshot(hostSessionId)]);
+        const input = (typeof args[0] === "object" ? args[0] : {}) as { id?: string; sessionId?: string; messageBefore?: number; messageLimit?: number };
+        const remoteSessionId = input.id ?? input.sessionId ?? "";
+        // Paged history: the Kimi messages endpoint pages backwards with
+        // `before_id`; PI's numeric cursor maps onto a message id.
+        const limit = Number.isFinite(input.messageLimit) ? Math.max(1, Math.min(200, Math.floor(input.messageLimit!))) : 100;
+        let items: KimiMessage[] = [];
+        let hasMoreBefore = false;
+        let messageStart = 0;
+        if (input.messageBefore !== undefined) {
+          const cursor = historyCursors.get(input.messageBefore);
+          if (!cursor || cursor.hostSessionId !== hostSessionId) {
+            throw Object.assign(new Error("remote history cursor expired; reopen the conversation"), { errorCode: "INVALID_ARGUMENT" });
+          }
+          const page = (await client.get(`/api/v1/sessions/${encodeURIComponent(hostSessionId)}/messages`, { page_size: limit, before_id: cursor.beforeId })) as { items?: KimiMessage[]; has_more?: boolean };
+          items = page.items ?? [];
+          hasMoreBefore = page.has_more === true && items.length > 0;
+        } else {
+          const snapshot = await getSnapshot(hostSessionId);
+          items = snapshot.messages?.items ?? [];
+          hasMoreBefore = snapshot.messages?.has_more === true;
+        }
+        const session = await getSession(hostSessionId);
         const running = session.main_turn_active ?? session.busy ?? false;
-        const messages = kimiSnapshotToUiMessages(snapshot.messages?.items ?? [], running);
+        const messages = kimiSnapshotToUiMessages(items, running);
+        if (hasMoreBefore && items[0]) {
+          messageStart = nextHistoryCursor--;
+          historyCursors.set(messageStart, { hostSessionId, beforeId: items[0].id });
+          while (historyCursors.size > 1024) historyCursors.delete(historyCursors.keys().next().value!);
+        }
         return {
           session: {
             id: remoteSessionId,
@@ -147,6 +178,10 @@ export function createKimiBackend(options: KimiBackendOptions): RemoteBackend {
             updatedAt: session.updated_at ?? new Date().toISOString(),
             createdAt: session.updated_at ?? new Date().toISOString(),
             capabilities: { canPrompt: true, canStop: true, canRefresh: true, canConfigureModel: true },
+            messageStart,
+            messageEnd: messages.length,
+            hasMoreBefore,
+            hasMoreAfter: false,
           },
         };
       }
@@ -184,6 +219,36 @@ export function createKimiBackend(options: KimiBackendOptions): RemoteBackend {
         await client.post(
           `/api/v1/sessions/${encodeURIComponent(hostSessionId)}/approvals/${encodeURIComponent(parsed.hostApprovalId)}`,
           { decision },
+        );
+        return { ok: true };
+      }
+      case IPC.invoke.askToolResolve: {
+        const resolution = args[0] as { requestId: string; answers: Array<string[] | null> };
+        const parsed = parseRemoteApprovalRequestId(resolution.requestId);
+        if (!parsed) throw invalid("malformed remote ask request id");
+        const hostSessionId = parseRemoteSessionId(parsed.remoteSessionId)?.hostSessionId;
+        if (!hostSessionId) throw invalid("malformed remote session id");
+        // Kimi answers questions as {answers: {itemId: {kind, option_id(s)}}},
+        // keyed by the question item id, not the label. Resolve the live
+        // snapshot so a stale answer fails closed instead of guessing ids.
+        const snapshot = await getSnapshot(hostSessionId);
+        const question = (snapshot.pending_questions ?? []).find((q) => q.question_id === parsed.hostApprovalId);
+        if (!question) {
+          throw Object.assign(new Error("question is no longer open"), { errorCode: "NOT_FOUND" });
+        }
+        const answers: Record<string, unknown> = {};
+        (question.questions ?? []).forEach((item, index) => {
+          const picked = resolution.answers[index];
+          if (!picked || picked.length === 0) return;
+          const options = item.options ?? [];
+          const byLabel = new Map(options.map((option) => [option.label, option.id]));
+          const ids = picked.map((label) => byLabel.get(label)).filter((id): id is string => Boolean(id));
+          if (ids.length === 0) return;
+          answers[item.id] = item.multi_select ? { kind: "multi", option_ids: ids } : { kind: "single", option_id: ids[0] };
+        });
+        await client.post(
+          `/api/v1/sessions/${encodeURIComponent(hostSessionId)}/questions/${encodeURIComponent(parsed.hostApprovalId)}`,
+          { answers, method: "click" },
         );
         return { ok: true };
       }

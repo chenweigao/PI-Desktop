@@ -541,12 +541,20 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       // with remoteProjectId derived from the session cwd so the sidebar
       // groups them like any other remote project.
       ...[...openedPerch.values()].flatMap((entry) => entry.host.summaries()),
+      // Kimi sessions likewise, tagged remoteAgent: "kimi" by their host.
+      ...[...openedKimi.values()].flatMap((entry) => entry.host.summaries()),
     ],
     async sessions(hostKey) {
       await ensureReady(hostKey);
       const record = (await registry.list()).find((item) => item.hostKey === hostKey);
       if (record && isPerchRecord(record)) {
         const entry = openedPerch.get(hostKey);
+        if (!entry) throw unavailable();
+        await entry.host.sessions();
+        return entry.host.summaries();
+      }
+      if (record && isKimiRecord(record)) {
+        const entry = openedKimi.get(hostKey);
         if (!entry) throw unavailable();
         await entry.host.sessions();
         return entry.host.summaries();
@@ -561,6 +569,19 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
         if (!entry) throw unavailable();
         return entry.host.projects();
       }
+      if (record && isKimiRecord(record)) {
+        await ensureReady(hostKey);
+        const entry = openedKimi.get(hostKey);
+        if (!entry) throw unavailable();
+        // Kimi has no project registry: projects are the distinct session cwds.
+        const sessions = await entry.host.sessions();
+        const seen = new Map<string, { id: string; label: string; archived: boolean }>();
+        for (const session of sessions) {
+          const cwd = session.metadata?.cwd ?? "";
+          if (cwd && !seen.has(cwd)) seen.set(cwd, { id: cwd, label: cwd.replace(/\/+$/, "").split("/").pop() ?? cwd, archived: false });
+        }
+        return [...seen.values()];
+      }
       return catalog.projects(hostKey);
     },
     async models(hostKey) {
@@ -568,6 +589,12 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       if (record && isPerchRecord(record)) {
         await ensureReady(hostKey);
         const entry = openedPerch.get(hostKey);
+        if (!entry) throw unavailable();
+        return entry.host.models();
+      }
+      if (record && isKimiRecord(record)) {
+        await ensureReady(hostKey);
+        const entry = openedKimi.get(hostKey);
         if (!entry) throw unavailable();
         return entry.host.models();
       }
@@ -583,6 +610,12 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
         if (!entry) throw unavailable();
         return entry.host.browse(path);
       }
+      if (record && isKimiRecord(record)) {
+        // Kimi has no browse endpoint; list directories over SSH like Perch.
+        const entry = openedKimi.get(hostKey);
+        if (!entry) throw unavailable();
+        throw Object.assign(new Error("remote browse for a Kimi host uses SSH; not yet wired"), { errorCode: "CAPABILITY_UNAVAILABLE" });
+      }
       return catalog.browseProjects(hostKey, path);
     },
     async registerProject(hostKey, path) {
@@ -594,6 +627,11 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
         if (!entry) throw unavailable();
         const directory = await entry.host.browse(path);
         return { id: directory.path, label: directory.path.replace(/\/+$/, "").split("/").pop() ?? directory.path, archived: false, path: directory.path };
+      }
+      if (record && isKimiRecord(record)) {
+        // Kimi has no project registry: a "project" is a session cwd; the path
+        // is validated by the bridge at session creation.
+        return { id: path, label: path.replace(/\/+$/, "").split("/").pop() ?? path, archived: false, path };
       }
       return catalog.registerProject(hostKey, path);
     },
@@ -693,6 +731,35 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
           messageCount: 0,
           updatedAt: new Date((created.updated ?? 0) * 1000).toISOString(),
           createdAt: new Date((created.updated ?? 0) * 1000).toISOString(),
+          capabilities: { canPrompt: true, canStop: true, canRefresh: true, canConfigureModel: true },
+        };
+      }
+      if (record && isKimiRecord(record)) {
+        await ensureReady(input.hostKey);
+        const entry = openedKimi.get(input.hostKey);
+        if (!entry) throw unavailable();
+        // The Kimi service creates a session from a remote cwd; `input.projectId`
+        // carries the cwd chosen in the UI.
+        const created = await entry.host.createSession({
+          cwd: input.projectId,
+          ...(input.title ? { title: input.title } : {}),
+          ...(input.model ? { model: input.model } : {}),
+        });
+        changed();
+        return {
+          id: makeRemoteSessionId(input.hostKey, created.id),
+          title: created.title ?? "", source: "remote" as const,
+          remoteHostKey: input.hostKey, remoteHostLabel: entry.label,
+          remoteProjectId: created.metadata?.cwd ?? input.projectId,
+          remoteWorkspaceLabel: (created.metadata?.cwd ?? input.projectId).replace(/\/+$/, "").split("/").pop() ?? input.projectId,
+          remoteAgent: "kimi",
+          mode: "agent" as SessionSummary["mode"],
+          permissionMode: "ask" as SessionSummary["permissionMode"],
+          thinkingLevel: "off" as SessionSummary["thinkingLevel"],
+          ...(created.agent_config?.model ? { modelId: created.agent_config.model } : {}),
+          messageCount: 0,
+          updatedAt: created.updated_at ?? new Date().toISOString(),
+          createdAt: created.updated_at ?? new Date().toISOString(),
           capabilities: { canPrompt: true, canStop: true, canRefresh: true, canConfigureModel: true },
         };
       }
