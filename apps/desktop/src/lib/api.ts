@@ -2112,6 +2112,9 @@ export const api = {
    * discovered from the remote endpoint.json, never pasted here. */
   addPerchRemoteHost: (request: { host: string; label: string; user?: string; port?: number; identityFile?: string; password?: string }) =>
     invoke<{ host: RemoteHostSummary }>(IPC.invoke.remoteHostAddPerch, request),
+  /** Register a Kimi channel host over SSH; the service token is discovered from the remote server.token. */
+  addKimiRemoteHost: (request: { host: string; label: string; user?: string; port?: number; identityFile?: string; password?: string }) =>
+    invoke<{ host: RemoteHostSummary }>(IPC.invoke.remoteHostAddKimi, request),
   /** Close and drop a paired host by its stable routing key. */
   removeRemoteHost: (hostKey: string) =>
     invoke<{ ok: true }>(IPC.invoke.remoteHostRemove, { hostKey }),

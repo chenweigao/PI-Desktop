@@ -1318,6 +1318,7 @@ export const ptBR = {
       sshBackend: "Backend",
       backendPiHost: "PI Host (RACP)",
       backendPerch: "Perch Agent",
+      backendKimi: "Kimi CLI",
       sshAuthPassword: "Senha",
       sshPassword: "Senha",
       sshPasswordPlaceholder: "Senha",

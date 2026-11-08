@@ -1506,6 +1506,7 @@ sklm: {
       sshBackend: "Backend",
       backendPiHost: "PI Host (RACP)",
       backendPerch: "Perch Agent",
+      backendKimi: "Kimi CLI",
       sshAuthPassword: "비밀번호",
       sshPassword: "비밀번호",
       sshPasswordPlaceholder: "비밀번호",

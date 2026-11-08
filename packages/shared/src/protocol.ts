@@ -283,6 +283,12 @@ export const IPC = {
      * carries `metadata.backend: "perch"` so the boot orchestrates it as HTTP.
      */
     remoteHostAddPerch: "pi-desktop/remoteHost/addPerch",
+    /**
+     * Register a Kimi channel host reached over SSH: Perch's
+     * local-agent-service starts or reuses the `kimi web` loopback service and
+     * the token is discovered from the remote server.token at connect time.
+     */
+    remoteHostAddKimi: "pi-desktop/remoteHost/addKimi",
     remoteHostReconnect: "pi-desktop/remoteHost/reconnect",
     remoteHostProjects: "pi-desktop/remoteHost/projects",
     /** Combined Perch model catalog for a host (each entry names its runtime). */

@@ -92,6 +92,9 @@ type OpenPerchHost = { hostKey: string; label: string; host: PerchHost };
 function isPerchRecord(record: RemoteHostRecord): boolean {
   return record.metadata?.backend === "perch";
 }
+function isKimiRecord(record: RemoteHostRecord): boolean {
+  return record.metadata?.backend === "kimi";
+}
 function unavailable(): Error {
   return Object.assign(new Error("remote host is unavailable"), { errorCode: "AGENT_UNAVAILABLE" });
 }
@@ -149,7 +152,9 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
   };
   /** A Perch host counts as connected when its orchestrator is live. */
   const isConnected = (key: string, record?: RemoteHostRecord) =>
-    record && isPerchRecord(record) ? openedPerch.has(key) : connectedHost(key) !== undefined;
+    record && isPerchRecord(record) ? openedPerch.has(key)
+    : record && isKimiRecord(record) ? openedKimi.has(key)
+    : connectedHost(key) !== undefined;
   const catalog = createRemoteSessionCatalog({
     getHost: (key) => {
       const host = connectedHost(key);
@@ -270,12 +275,55 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
     const entry = openedPerch.get(key);
     openedPerch.delete(key);
     if (entry) await entry.host.close().catch((error: unknown) => log("warn", "perch host close failed", { error: String(error) }));
+    await closeKimi(key);
+  }
+
+  /** A Kimi host is orchestrated like Perch but over the Kimi Web API. */
+  const openedKimi = new Map<string, { hostKey: string; label: string; host: import("../remote/kimi/kimi-host.js").KimiHost }>();
+
+  async function openKimiOnce(record: RemoteHostRecord): Promise<void> {
+    assertOpen();
+    const ssh = sshMetadataOf(record);
+    if (!ssh) {
+      throw Object.assign(new Error("kimi host requires SSH metadata"), { errorCode: "INVALID_ARGUMENT" });
+    }
+    const { createKimiHost } = await import("../remote/kimi/kimi-host.js");
+    const host = createKimiHost({
+      hostKey: record.hostKey, label: record.label, router: options.router,
+      ssh: { host: ssh.host, remotePort: ssh.remotePort,
+        ...(ssh.port !== undefined ? { port: ssh.port } : {}),
+        ...(ssh.user ? { user: ssh.user } : {}),
+        ...(ssh.identityFile ? { identityFile: ssh.identityFile } : {}) },
+      ...(record.sshSecret ? { sshSecret: record.sshSecret } : {}),
+      emit: options.emit,
+      buildTransport: () => createSystemSshTransport({
+        host: ssh.host,
+        ...(ssh.port !== undefined ? { port: ssh.port } : {}),
+        ...(ssh.user ? { user: ssh.user } : {}),
+        ...(ssh.identityFile ? { identityFile: ssh.identityFile } : {}),
+        ...(record.sshSecret ? { password: record.sshSecret } : {}),
+      }),
+      log,
+    });
+    await host.connect();
+    if (closed) { await host.close(); throw unavailable(); }
+    openedKimi.set(record.hostKey, { hostKey: record.hostKey, label: record.label, host });
+  }
+
+  async function closeKimi(key: string): Promise<void> {
+    const entry = openedKimi.get(key);
+    openedKimi.delete(key);
+    if (entry) await entry.host.close().catch((error: unknown) => log("warn", "kimi host close failed", { error: String(error) }));
   }
 
   async function openHostOnce(record: RemoteHostRecord): Promise<OpenHost | void> {
     assertOpen();
     if (isPerchRecord(record)) {
       await openPerchOnce(record);
+      return;
+    }
+    if (isKimiRecord(record)) {
+      await openKimiOnce(record);
       return;
     }
     const ssh = sshMetadataOf(record);
@@ -389,6 +437,14 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       return { hostKey: record.hostKey, label: record.label, url: record.url,
         connected: isLive, status, transport: transportOf(record) };
     }
+    if (isKimiRecord(record)) {
+      const live = openedKimi.get(record.hostKey);
+      const isLive = live?.host.isConnected() === true;
+      const status: RemoteHostConnectionStatus = isLive ? "connected"
+        : actionRequired.has(record.hostKey) ? "action-required" : "disconnected";
+      return { hostKey: record.hostKey, label: record.label, url: record.url,
+        connected: isLive, status, transport: transportOf(record) };
+    }
     const state = opened.get(record.hostKey)?.adapter.state();
     const status: RemoteHostConnectionStatus = state === "connected" || state === "connecting" || state === "reconnecting"
       ? state
@@ -460,10 +516,16 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       for (const controller of bootstraps.keys()) controller.abort();
       const hosts = new Set([...opened.values(), ...openingHosts]);
       const perchHosts = [...openedPerch.values()];
+      const kimiHosts = [...openedKimi.values()];
       opened.clear();
       openedPerch.clear();
+      openedKimi.clear();
       closing = (async () => {
-        const cleanup = [...[...hosts].map(closeHost), ...perchHosts.map((entry) => entry.host.close().catch(() => undefined))];
+        const cleanup = [
+          ...[...hosts].map(closeHost),
+          ...perchHosts.map((entry) => entry.host.close().catch(() => undefined)),
+          ...kimiHosts.map((entry) => entry.host.close().catch(() => undefined)),
+        ];
         // Forward creation is itself an operation we must cancel, not await
         // before disposal. The same fence prevents all late registrations.
         const disposal = tunnels.dispose();

@@ -187,6 +187,41 @@ export function registerRemoteHostIpc(options: RegisterRemoteHostIpcOptions): vo
   );
 
   registrar.handle(
+    IPC.invoke.remoteHostAddKimi,
+    async (request: {
+      host: string; label: string; user?: string; port?: number; identityFile?: string; password?: string;
+    }): Promise<{ host: RemoteHostSummary }> => {
+      const boot = requireBoot(getRemoteHostsBoot());
+      const host = trim(request?.host);
+      const label = trim(request?.label) || host;
+      if (!host) throw invalid("host is required", "host");
+      const hostKey = synthesizeHostKey(host, label);
+      if (hostKey.includes(":")) throw invalid("hostKey must not contain ':'", "hostKey");
+      // The Kimi service token is read from the remote server.token over SSH at
+      // connect time. The record marks `metadata.backend: "kimi"`.
+      const summary = await boot.addHost({
+        hostKey,
+        label,
+        url: `kimi+ssh://${host}`,
+        deviceToken: "",
+        ...(request?.password ? { sshSecret: request.password } : {}),
+        metadata: {
+          transport: "ssh",
+          backend: "kimi",
+          ssh: {
+            host,
+            remotePort: 1,
+            ...(request?.user ? { user: request.user } : {}),
+            ...(request?.port ? { port: request.port } : {}),
+            ...(request?.identityFile ? { identityFile: request.identityFile } : {}),
+          },
+        },
+      });
+      return { host: summary };
+    },
+  );
+
+  registrar.handle(
     IPC.invoke.remoteHostRemove,
     async (request: RemoteHostRemoveRequest): Promise<{ ok: true }> => {
       const boot = requireBoot(getRemoteHostsBoot());

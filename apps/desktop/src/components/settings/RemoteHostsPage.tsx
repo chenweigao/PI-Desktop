@@ -53,7 +53,7 @@ type SshForm = {
   auth: RemoteHostSshAuth;
   password: string;
   /** "pi-host" installs+pairs a RACP host; "perch" registers a Perch bridge. */
-  backend: "pi-host" | "perch";
+  backend: "pi-host" | "perch" | "kimi";
 };
 
 const EMPTY_SSH_FORM: SshForm = {
@@ -221,7 +221,19 @@ export function RemoteHostsPage() {
         // Empty optional fields are dropped rather than sent blank, so main
         // falls back to the SSH config and the local user name. A password
         // replaces the key, so no `-i` is sent alongside it.
-        if (sshForm.backend === "perch") {
+        if (sshForm.backend === "kimi") {
+          const result = await api.addKimiRemoteHost({
+            label,
+            host,
+            ...(user ? { user } : {}),
+            ...(port ? { port: Number(port) } : {}),
+            ...(!passwordMode && identityFile ? { identityFile } : {}),
+            ...(passwordMode && password ? { password } : {}),
+          });
+          showToast(t("settings.remoteHosts.sshSucceeded", { label: result.host.label }), {
+            variant: "info",
+          });
+        } else if (sshForm.backend === "perch") {
           // A Perch bridge needs no bundle install or pairing token: the
           // token is discovered from the remote endpoint.json at connect time.
           const result = await api.addPerchRemoteHost({
@@ -490,6 +502,7 @@ export function RemoteHostsPage() {
                     options={[
                       { value: "pi-host", label: t("settings.remoteHosts.backendPiHost") },
                       { value: "perch", label: t("settings.remoteHosts.backendPerch") },
+                      { value: "kimi", label: t("settings.remoteHosts.backendKimi") },
                     ]}
                     label={t("settings.remoteHosts.sshBackend")}
                     disabled={installing}
