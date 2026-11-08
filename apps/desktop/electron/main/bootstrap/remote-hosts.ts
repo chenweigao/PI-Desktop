@@ -803,9 +803,15 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
           : {}),
       };
       await registry.upsert(next);
-      await closeLive(key);
-      await tunnels.close(key);
-      await openHost(next);
+      // A label-only rename never drops the live connection; connection-affecting
+      // fields (SSH target/credentials) close and reopen.
+      const connectionChanged = patch.ssh !== undefined || patch.sshSecret !== undefined;
+      if (connectionChanged) {
+        await closeLive(key);
+        await tunnels.close(key);
+        await openHost(next);
+      }
+      changed();
       return summaryOf(next);
     }),
     checkHost: (key) => serial(key, async () => {

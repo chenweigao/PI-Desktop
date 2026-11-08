@@ -36,18 +36,26 @@ Upstream touchpoints (edits to existing files — review these first on sync):
 
 ## Sync procedure (manual, on demand)
 
+Never integrate in the feature worktree: create a separate integration
+worktree so a failed merge leaves `feat/pi-perch-adapter` untouched.
+
 ```bash
-cd _worktrees/pi-perch-adapter-20261107   # or the current task worktree
+cd _worktrees/pi-perch-adapter-20261107   # any worktree of this repo
 git fetch origin main
-git checkout -b integrate/upstream-YYYYMMDD   # throwaway integration branch
-git merge origin/main                        # merge, never rebase pushed work
+BASE=$(git merge-base origin/main feat/pi-perch-adapter)
+git worktree add ../_worktrees/pi-upstream-sync-$(date +%Y%m%d) \
+  -b integrate/upstream-$(date +%Y%m%d) origin/main
+cd ../_worktrees/pi-upstream-sync-$(date +%Y%m%d)
+git merge feat/pi-perch-adapter            # merge, never rebase pushed work
 # resolve conflicts in the touchpoints listed above first
 pnpm install && pnpm -r build
 cd apps/desktop && node --test test/*.test.mjs   # incl. perch/kimi suites
 cd ../../packages/i18n && pnpm test
 ```
 
-Then push the integration branch to the fork for review; merge into `feat/pi-perch-adapter` only after Codex acceptance on a Mac preview build. The user decides when to release.
+Then push the integration branch to the fork for review; merge into
+`feat/pi-perch-adapter` only after Codex acceptance on a Mac preview build,
+then remove the integration worktree. The user decides when to release.
 
 ## Updater safety
 

@@ -421,7 +421,11 @@ export function RemoteHostsPage() {
                 <Button variant="ghost" disabled={checking !== null} onClick={() => void check(host)}>
                   {checking === host.hostKey ? remoteT("loading") : t("settings.remoteHosts.check")}
                 </Button>
-                <Button variant="ghost" onClick={() => setEditing(editing === host.hostKey ? null : host.hostKey)}>
+                <Button variant="ghost" onClick={() => {
+                  if (editing === host.hostKey) { setEditing(null); return; }
+                  setEditLabel(host.label);
+                  setEditing(host.hostKey);
+                }}>
                   {t("settings.remoteHosts.edit")}
                 </Button>
                 <Button variant="ghost" disabled={reconnecting !== null} onClick={() => void reconnect(host)}>

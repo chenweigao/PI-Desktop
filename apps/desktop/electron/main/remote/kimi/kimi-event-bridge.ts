@@ -35,6 +35,9 @@ type SessionState = {
   lastEpoch: string | null;
   lastMessages: Map<string, UiMessage>;
   liveApprovals: Set<string>;
+  /** The turn whose outcome we already reported, so a settled snapshot for a
+   * turn we never saw busy still reports its terminal state exactly once. */
+  reportedTurnOutcome: string | null;
 };
 
 function toPermissionRequest(remoteSessionId: string, approval: KimiApproval): ToolPermissionRequest {
@@ -143,7 +146,7 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
   const stateFor = (hostSessionId: string): SessionState => {
     let state = sessions.get(hostSessionId);
     if (!state) {
-      state = { busy: false, lastSeq: -1, lastEpoch: null, lastMessages: new Map(), liveApprovals: new Set() };
+      state = { busy: false, lastSeq: -1, lastEpoch: null, lastMessages: new Map(), liveApprovals: new Set(), reportedTurnOutcome: null };
       sessions.set(hostSessionId, state);
     }
     return state;
@@ -237,33 +240,42 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
         }
       }
 
-      /* ---- settle: report the real outcome ---- */
-      if (settled) {
+      /* ---- settle: report the real outcome, exactly once per turn ----
+       * A turn that started and finished between two polls was never observed
+       * busy, so `settled` is false — but its terminal reason is durable. Report
+       * it once, keyed by the turn identity, instead of dropping it. */
+      const reason = session?.last_turn_reason;
+      const turnKey = session?.id ? `${session.id}:${reason ?? ""}` : null;
+      const shouldReport = reason && reason !== "running" && state.reportedTurnOutcome !== turnKey;
+      if (settled || shouldReport) {
         for (const ui of seen.values()) {
           if (ui.status === "streaming") {
             emitAgent(remoteSessionId, { type: "message_end", message: { ...ui, status: "complete" } });
           }
         }
-        // A live row from the turn that just ended is closed out: its content
-        // is now in the durable history, so the temporary row must not linger
-        // as a second streaming bubble.
-        const previousLive = state.lastMessages.keys();
-        for (const id of previousLive) {
-          if (id.startsWith(`in-flight:${hostSessionId}:`)) {
-            const stale = state.lastMessages.get(id);
-            if (stale) emitAgent(remoteSessionId, { type: "message_end", message: { ...stale, status: "complete" } });
+        // A live row from the turn that just ended is merged into the turn's
+        // final assistant message: message_end with replacesMessageId re-keys
+        // it, so the renderer keeps one row, not a stale partial plus a final
+        // duplicate. The final assistant row is the last one in this snapshot.
+        const finalAssistant = [...seen.values()].filter((ui) => ui.role === "assistant" && ui.status === "complete").at(-1);
+        for (const [id, stale] of state.lastMessages) {
+          if (!id.startsWith(`in-flight:${hostSessionId}:`)) continue;
+          if (finalAssistant) {
+            emitAgent(remoteSessionId, { type: "message_end", message: finalAssistant, replacesMessageId: id });
+          } else {
+            emitAgent(remoteSessionId, { type: "message_end", message: { ...stale, status: "complete" } });
           }
         }
-        const reason = session?.last_turn_reason;
         if (reason === "failed") {
           emitAgent(remoteSessionId, { type: "error", error: { code: "TURN_FAILED", message: "remote turn failed" } });
         } else if (reason === "aborted" || reason === "cancelled" || reason === "stopped") {
           emitAgent(remoteSessionId, { type: "error", error: { code: "TURN_ABORTED", message: "turn stopped" } });
         } else if (reason === "unknown" || reason === "interrupted") {
           emitAgent(remoteSessionId, { type: "error", error: { code: "TURN_UNKNOWN", message: "the turn's outcome is unknown" } });
-        } else {
+        } else if (settled || shouldReport) {
           emitAgent(remoteSessionId, { type: "agent_end", messageIds: [...seen.keys()] });
         }
+        if (turnKey) state.reportedTurnOutcome = turnKey;
       }
       state.lastMessages = seen;
       state.busy = busy;

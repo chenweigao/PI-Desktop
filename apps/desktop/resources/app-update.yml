@@ -1,4 +1,8 @@
+# Fork builds must never pull the upstream updater feed — that would replace
+# the Perch/Kimi secondary development with an official package. This fork's
+# feed is its own repo; with no fork release pipeline yet the updater finds
+# nothing and stays inert.
 provider: github
-owner: vastsa
+owner: chenweigao
 repo: PI-Desktop
 updaterCacheDirName: '@pi-desktopdesktop-updater'

@@ -22,6 +22,7 @@ async function startKimi() {
     server: null, port: 0,
     prompts: [], approvals: [], aborts: 0,
     pendingApprovals: [],
+    pendingQuestions: [],
     busy: false, lastTurnReason: "completed",
     messages: [],
     receipts: new Map(),
@@ -48,7 +49,7 @@ async function startKimi() {
         return reply(0, { id: sub, title: "kimi", busy: state.busy, main_turn_active: state.busy, last_turn_reason: state.lastTurnReason, pending_interaction: state.pendingApprovals.length ? "approval" : "none", agent_config: {}, metadata: { cwd: "/srv" } });
       }
       if (req.method === "GET" && rest === "/snapshot") {
-        return reply(0, { as_of_seq: state.prompts.length, epoch: "e1", session: { id: sub, busy: state.busy, main_turn_active: state.busy, last_turn_reason: state.lastTurnReason, pending_interaction: state.pendingApprovals.length ? "approval" : "none", agent_config: {}, metadata: { cwd: "/srv" } }, messages: { items: state.messages, has_more: false }, pending_approvals: state.pendingApprovals });
+        return reply(0, { as_of_seq: state.prompts.length, epoch: "e1", session: { id: sub, busy: state.busy, main_turn_active: state.busy, last_turn_reason: state.lastTurnReason, pending_interaction: state.pendingApprovals.length ? "approval" : (state.pendingQuestions.length ? "question" : "none"), agent_config: {}, metadata: { cwd: "/srv" } }, messages: { items: state.messages, has_more: false }, pending_approvals: state.pendingApprovals, pending_questions: state.pendingQuestions });
       }
       if (req.method === "POST" && rest === "/prompts") {
         // Accept the prompt, then hang: the client times out and must NOT
@@ -235,15 +236,15 @@ test("pending questions become asks and a click answer maps labels to option ids
   const snapshot = emitted.find((e) => e.payload?.kind === "snapshot");
   assert.ok(snapshot.payload.asks.length, "question surfaces as an ask");
   assert.equal(snapshot.payload.asks[0].questions[0].options[0].label, "Option A");
-  // Answer through the backend: label maps to the option id.
+  // Answer through the backend: the fake serves the live question in its
+  // snapshot, and the answer POST must actually reach it with the option id.
+  kimi.pendingQuestions.push({ question_id: "q1", questions: [{ id: "q1a", question: "Pick one", options: [{ id: "o1", label: "Option A" }, { id: "o2", label: "Option B" }] }] });
   const backend = createKimiBackend({ hostKey: "k", client: clientFor(kimi) });
-  // Seed the live question for the backend's snapshot read.
-  kimi.pendingApprovals.length = 0;
   const sessionId = makeRemoteSessionId("k", "ks1");
   const { makeRemoteApprovalRequestId: mk } = await import("../electron/main/remote/backend-router.ts");
-  // The backend reads the live snapshot; make the fake serve the question.
-  const origGet = kimi.server.listeners("request")[0];
-  await backend.invoke(IPC.invoke.askToolResolve, [{ requestId: mk(sessionId, "q1"), answers: [["Option B"]] }]).catch(() => null);
+  await backend.invoke(IPC.invoke.askToolResolve, [{ requestId: mk(sessionId, "q1"), answers: [["Option B"]] }]);
+  assert.equal(asked.length, 1, "the answer reached the service");
+  assert.deepEqual(asked[0], { answers: { q1a: { kind: "single", option_id: "o2" } }, method: "click" });
   await new Promise((r) => kimi.server.close(r));
 });
 
