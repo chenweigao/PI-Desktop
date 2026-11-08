@@ -611,10 +611,9 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
         return entry.host.browse(path);
       }
       if (record && isKimiRecord(record)) {
-        // Kimi has no browse endpoint; list directories over SSH like Perch.
         const entry = openedKimi.get(hostKey);
         if (!entry) throw unavailable();
-        throw Object.assign(new Error("remote browse for a Kimi host uses SSH; not yet wired"), { errorCode: "CAPABILITY_UNAVAILABLE" });
+        return entry.host.browse(path);
       }
       return catalog.browseProjects(hostKey, path);
     },

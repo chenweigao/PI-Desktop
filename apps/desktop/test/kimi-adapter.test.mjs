@@ -262,7 +262,7 @@ test("the in-flight turn's streaming text renders as a live assistant row", () =
   const emitted = [];
   const bridge = createKimiEventBridge({ hostKey: "k", emit: (c, p) => emitted.push(p) });
   bridge.applySnapshot("ks1", { as_of_seq: 1, epoch: "e1", session: { id: "ks1", busy: true, main_turn_active: true }, in_flight_turn: { turn_id: 7, assistant_text: "streaming…" }, messages: { items: [] } });
-  const start = emitted.find((e) => e.event?.type === "message_start" && e.event.message.id === "in-flight:ks1");
+  const start = emitted.find((e) => e.event?.type === "message_start" && e.event.message.id === "in-flight:ks1:7");
   assert.ok(start, "the in-flight text starts a live row");
   assert.equal(start.event.message.content, "streaming…");
   assert.equal(start.event.message.status, "streaming");

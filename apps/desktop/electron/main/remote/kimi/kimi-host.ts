@@ -45,6 +45,8 @@ export interface KimiHost {
   sessions(): Promise<KimiSession[]>;
   summaries(): SessionSummary[];
   models(): Promise<Array<{ id: string; provider: string; name: string; agent: string }>>;
+  /** List remote directories over SSH (the Kimi service has no browse endpoint). */
+  browse(path?: string): Promise<{ path: string; parent?: string; entries: { name: string; path: string }[] }>;
   createSession(input: { cwd: string; model?: string; title?: string }): Promise<KimiSession>;
 }
 
@@ -70,6 +72,9 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
   // Per-session "was busy/pending last poll" so a just-settled session is read
   // once more (its final snapshot) instead of being skipped on the idle row.
   const lastActive = new Map<string, boolean>();
+  // Per-session last-seen updated_at: a turn that ran between polls bumps it,
+  // so a short turn is read even when the list row is idle on both polls.
+  const lastSeenUpdatedAt = new Map<string, string>();
   // Kimi carries the model on the next prompt; shared across every backend
   // registered for this host so a create-time model and a later switch agree.
   const sessionModels = new Map<string, string>();
@@ -151,19 +156,23 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
         if (running || (session.pending_interaction && session.pending_interaction !== "none")) anyBusy = true;
         const known = lastSeenSeq.get(hostSessionId);
         if (known === undefined) registerSessionBackend(hostSessionId);
-        // Skip a snapshot only when the session was ALREADY idle with no
-        // pending interaction AND we have a snapshot baseline — a session that
-        // just settled must be read once more so its final state and messages
-        // reach the renderer; a short turn that started and finished between
-        // polls must not be invisible.
+        // Skip a snapshot only when nothing observable changed: not busy, no
+        // pending interaction, we already hold a snapshot baseline, the session
+        // was idle last time, AND the list row's updated_at is unchanged. A
+        // turn that started and finished between polls bumps updated_at, so it
+        // is read even though the list row is idle on both polls.
         const wasActive = lastActive.get(hostSessionId) === true;
-        if (!running && (session.pending_interaction ?? "none") === "none" && known !== undefined && !wasActive) {
+        const updatedAt = session.updated_at ?? "";
+        const wasUpdated = lastSeenUpdatedAt.get(hostSessionId) !== undefined
+          && lastSeenUpdatedAt.get(hostSessionId) !== updatedAt;
+        if (!running && (session.pending_interaction ?? "none") === "none" && known !== undefined && !wasActive && !wasUpdated) {
           continue;
         }
         const snapshot = (await client.get(`/api/v1/sessions/${encodeURIComponent(hostSessionId)}/snapshot`)) as KimiSnapshot;
         const seq = snapshot.as_of_seq ?? 0;
         if (snapshot.session && (snapshot.session.main_turn_active ?? snapshot.session.busy)) anyBusy = true;
         lastSeenSeq.set(hostSessionId, seq);
+        lastSeenUpdatedAt.set(hostSessionId, updatedAt);
         bridge.applySnapshot(hostSessionId, snapshot);
         // Track the post-read activity: only a session that is idle AND was
         // idle last time is skippable next round.
@@ -250,6 +259,38 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
       return (catalog.items ?? []).map((item) => ({
         id: item.model, provider: item.provider, name: item.display_name ?? item.model, agent: "kimi",
       }));
+    },
+    async browse(path) {
+      const buildTransport = options.buildTransport;
+      if (!buildTransport) throw Object.assign(new Error("kimi host is not connected"), { errorCode: "AGENT_UNAVAILABLE" });
+      const transport = buildTransport();
+      // No path: the remote home directory via a bare cd. A path must be
+      // absolute; the service has no browse endpoint, so this lists over SSH.
+      const useHome = !path;
+      if (!useHome && (!path!.startsWith("/") || path!.includes("\0"))) {
+        throw Object.assign(new Error("browse path must be an absolute remote directory"), { errorCode: "INVALID_ARGUMENT" });
+      }
+      const command = useHome
+        ? `cd && pwd && ls -1Ap 2>/dev/null | grep '/$' | head -200`
+        : `cd -- '${path!.replace(/'/g, "'\\''")}' && pwd && ls -1Ap 2>/dev/null | grep '/$' | head -200`;
+      const result = await transport.exec(command, { timeoutMs: 15_000 });
+      if (result.code !== 0) {
+        throw Object.assign(
+          new Error(`remote directory is not readable: ${result.stderr.trim().slice(-200) || `exit ${result.code}`}`),
+          { errorCode: "REMOTE_BROWSE_FAILED" },
+        );
+      }
+      const lines = result.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+      const resolved = lines[0];
+      if (!resolved || !resolved.startsWith("/")) {
+        throw Object.assign(new Error("remote browse returned no directory"), { errorCode: "REMOTE_BROWSE_FAILED" });
+      }
+      const entries = lines.slice(1).map((name) => {
+        const clean = name.replace(/\/$/, "");
+        return { name: clean, path: `${resolved.replace(/\/$/, "")}/${clean}` };
+      });
+      const parent = resolved === "/" ? undefined : resolved.replace(/\/+$/, "").replace(/\/[^/]*$/, "") || "/";
+      return { path: resolved, ...(parent ? { parent } : {}), entries };
     },
     async createSession(input) {
       const { client: live } = assertLive();

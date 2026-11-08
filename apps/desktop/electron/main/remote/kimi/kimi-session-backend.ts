@@ -239,12 +239,31 @@ export function createKimiBackend(options: KimiBackendOptions): RemoteBackend {
         const answers: Record<string, unknown> = {};
         (question.questions ?? []).forEach((item, index) => {
           const picked = resolution.answers[index];
+          // Skipped item (null/empty): omitted from the answers map entirely.
           if (!picked || picked.length === 0) return;
           const options = item.options ?? [];
           const byLabel = new Map(options.map((option) => [option.label, option.id]));
-          const ids = picked.map((label) => byLabel.get(label)).filter((id): id is string => Boolean(id));
-          if (ids.length === 0) return;
-          answers[item.id] = item.multi_select ? { kind: "multi", option_ids: ids } : { kind: "single", option_id: ids[0] };
+          const ids: string[] = [];
+          const freeTexts: string[] = [];
+          for (const label of picked) {
+            const id = byLabel.get(label);
+            if (id) ids.push(id);
+            else if (item.allow_other) freeTexts.push(label);
+            // A label that matches no option and no free-text slot is never
+            // silently dropped: it must surface, not vanish.
+            else throw invalid(`answer "${label}" matches no option and this question does not allow free text`);
+          }
+          const value: Record<string, unknown> = {};
+          if (item.multi_select) {
+            if (ids.length && freeTexts.length) Object.assign(value, { kind: "multi_with_other", option_ids: ids, other_text: freeTexts.join("\n") });
+            else if (ids.length) Object.assign(value, { kind: "multi", option_ids: ids });
+            else if (freeTexts.length) Object.assign(value, { kind: "other", text: freeTexts.join("\n") });
+          } else if (ids.length) {
+            Object.assign(value, { kind: "single", option_id: ids[0] });
+          } else if (freeTexts.length) {
+            Object.assign(value, { kind: "other", text: freeTexts[0] });
+          }
+          if (Object.keys(value).length) answers[item.id] = value;
         });
         await client.post(
           `/api/v1/sessions/${encodeURIComponent(hostSessionId)}/questions/${encodeURIComponent(parsed.hostApprovalId)}`,

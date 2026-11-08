@@ -82,7 +82,10 @@ export function kimiSnapshotToUiMessages(messages: KimiMessage[], streaming: boo
         role: message.role === "user" ? "user" : message.role === "tool" ? "tool" : "assistant",
         content: text,
         createdAt,
-        status: streaming ? "streaming" : "complete",
+        // Durable history rows are never "streaming": a live turn's partial
+        // text lives on the separate in-flight row, so these stay complete and
+        // the settle pass never resurrects an old final as streaming.
+        status: "complete",
         ...(thinking ? { thinking } : {}),
       });
     }
@@ -100,7 +103,7 @@ export function kimiSnapshotToUiMessages(messages: KimiMessage[], streaming: boo
             toolCallId: callId,
             toolName: part.tool_name ?? "",
             toolArgs: part.input,
-            status: streaming ? "streaming" : "complete",
+            status: "complete",
             toolStatus: streaming ? "running" : undefined,
           };
           toolRowByCallId.set(callId, row);
@@ -212,11 +215,13 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
         }
       }
       // The in-flight turn's streaming text is not yet a durable message; show
-      // it as a live assistant row so the running turn is visible.
+      // it as a live assistant row keyed by the turn id so the next turn never
+      // collides with this one, and the settle step ends it explicitly.
       const inFlight = snapshot.in_flight_turn;
-      if (busy && inFlight && (inFlight.assistant_text || inFlight.thinking_text)) {
+      const liveRowId = inFlight?.turn_id !== undefined ? `in-flight:${hostSessionId}:${inFlight.turn_id}` : null;
+      if (busy && inFlight && (inFlight.assistant_text || inFlight.thinking_text) && liveRowId) {
         const liveRow: UiMessage = {
-          id: `in-flight:${hostSessionId}`,
+          id: liveRowId,
           role: "assistant",
           content: inFlight.assistant_text ?? "",
           ...(inFlight.thinking_text ? { thinking: inFlight.thinking_text } : {}),
@@ -237,6 +242,16 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
         for (const ui of seen.values()) {
           if (ui.status === "streaming") {
             emitAgent(remoteSessionId, { type: "message_end", message: { ...ui, status: "complete" } });
+          }
+        }
+        // A live row from the turn that just ended is closed out: its content
+        // is now in the durable history, so the temporary row must not linger
+        // as a second streaming bubble.
+        const previousLive = state.lastMessages.keys();
+        for (const id of previousLive) {
+          if (id.startsWith(`in-flight:${hostSessionId}:`)) {
+            const stale = state.lastMessages.get(id);
+            if (stale) emitAgent(remoteSessionId, { type: "message_end", message: { ...stale, status: "complete" } });
           }
         }
         const reason = session?.last_turn_reason;
