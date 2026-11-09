@@ -209,7 +209,7 @@ export function RemoteHostsPage() {
         const port = editPort.trim();
         const servicePort = editServicePort.trim();
         for (const candidate of [port, servicePort]) {
-          if (candidate && !/^\d{1,5}$/.test(candidate)) {
+          if (candidate && (!/^\d{1,5}$/.test(candidate) || Number(candidate) < 1 || Number(candidate) > 65535)) {
             setError(t("settings.remoteHosts.sshPortInvalid"));
             return;
           }

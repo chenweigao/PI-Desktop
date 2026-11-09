@@ -235,7 +235,7 @@ export function createKimiBackend(options: KimiBackendOptions): RemoteBackend {
           pendingPermission.set(hostSessionId, config.permissionMode);
         }
         return { session: {
-          id: (args[0] as { sessionId?: string }).sessionId ?? hostSessionId,
+          id: typeof args[0] === "string" ? args[0] : ((args[0] as { sessionId?: string })?.sessionId ?? hostSessionId),
           ...(config.modelId ? { modelId: config.modelId } : session.agent_config?.model ? { modelId: session.agent_config.model } : {}),
           remotePermission: kimiPermissionCapability(pendingPermission.get(hostSessionId) ?? session.agent_config?.permission_mode),
         } };

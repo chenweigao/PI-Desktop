@@ -12,6 +12,7 @@ import {
 } from "@pi-desktop/shared";
 import { isPermissionMode } from "../../features/chat/composer/model";
 import { api } from "../../lib/api";
+import { isRemoteSession } from "../../lib/remote-session-safety";
 import { sameComposerModelId } from "../../lib/composer-models";
 import { scheduleHomeDraftAdopt } from "../../lib/composer-draft-cache";
 import {
@@ -100,7 +101,19 @@ export function createSessionCoordination({
           set((state) => ({
             sessions: state.sessions.map((session) =>
               session.id === sessionId
-                ? {
+                ? isRemoteSession(session)
+                  ? {
+                      // Remote backends answer with a partial row; merge it onto
+                      // the known session so id/source/title/capabilities and
+                      // the remote identity survive the deferred flush.
+                      ...session,
+                      ...result.session,
+                      id: session.id,
+                      source: session.source,
+                      pinned: sessionIsPinned(sessionId, state.sessionMeta),
+                      archived: sessionIsArchived(sessionId, state.sessionMeta),
+                    }
+                : {
                     ...result.session,
                     pinned: sessionIsPinned(sessionId, state.sessionMeta),
                     archived: sessionIsArchived(sessionId, state.sessionMeta),

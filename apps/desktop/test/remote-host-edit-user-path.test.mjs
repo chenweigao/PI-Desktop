@@ -163,13 +163,18 @@ window.remoteHostEditProbe = async () => {
   check(saveButton(), "form closed despite the validation error");
   check(errorText().includes(label("sshHostRequired")), "missing host-required error: " + errorText());
 
-  // 7. A non-numeric port is rejected locally; nothing is sent.
+  // 7. A non-numeric or out-of-range port is rejected locally; nothing is sent.
   await fill("sshHost", "new.example.com");
   await fill("sshPort", "abc");
   flushSync(() => saveButton().click());
   await frame();
   check(updates.length === 4, "invalid port reached the backend");
   check(errorText().includes(label("sshPortInvalid")), "missing invalid-port error: " + errorText());
+  await fill("sshPort", "99999");
+  flushSync(() => saveButton().click());
+  await frame();
+  check(updates.length === 4, "out-of-range port reached the backend");
+  check(errorText().includes(label("sshPortInvalid")), "99999 accepted as a port");
   flushSync(() => [...document.querySelectorAll("button")].find((node) => node.textContent.trim() === i18n.t("common.cancel")).click());
   await until(() => editButton() && !saveButton(), "cancel did not close the form");
 

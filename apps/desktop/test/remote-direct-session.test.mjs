@@ -294,8 +294,9 @@ test("review: kimi host summaries carry the permission capability, pending next-
     const body = req.method === "POST" ? JSON.parse(await new Promise((r) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => r(b || "{}")); })) : {};
     if (url.pathname === "/api/v1/sessions" && req.method === "GET") return reply(0, { items: [...store.values()], has_more: false });
     if (url.pathname === "/api/v1/sessions" && req.method === "POST") {
-      const created = { id: "k2", title: body.title ?? "k", agent_config: {}, metadata: { cwd: body.metadata?.cwd } };
-      store.set("k2", created);
+      const id = `k${store.size + 1}`;
+      const created = { id, title: body.title ?? "k", agent_config: {}, metadata: { cwd: body.metadata?.cwd } };
+      store.set(id, created);
       return reply(0, created);
     }
     const m = url.pathname.match(/^\/api\/v1\/sessions\/([^/:]+)(.*)$/);
@@ -337,6 +338,18 @@ test("review: kimi host summaries carry the permission capability, pending next-
     const promptResult = await router.route(IPC.invoke.agentPrompt, [{ sessionId: makeRemoteSessionId("kimi-t", "k2"), content: "hi", messageId: "m1" }]);
     assert.equal(prompts.at(-1).permission_mode, "yolo", "next prompt carries the chosen mode");
     assert.equal(promptResult.remote, true);
+    // The PI placeholder ("ask") at creation means "the runtime default": it
+    // must not be forwarded as a literal mode nor fail after creation.
+    const defaulted = await host.createSession({ cwd: "/srv", title: "t2", permissionMode: "ask" });
+    assert.equal(defaulted.id, "k3");
+    const row3 = host.summaries().find((s) => s.id.endsWith(":k3"));
+    assert.equal(row3.remotePermission.selected, "manual", "placeholder maps to the kimi default");
+    await router.route(IPC.invoke.agentPrompt, [{ sessionId: makeRemoteSessionId("kimi-t", "k3"), content: "hi", messageId: "m2" }]);
+    assert.equal(prompts.at(-1).permission_mode, undefined, "placeholder never reaches the wire");
+    // A string-addressed configure returns the renderer-visible id, so a
+    // deferred flush merges onto the right row.
+    const configured = await router.route(IPC.invoke.sessionConfigure, [makeRemoteSessionId("kimi-t", "k3"), { permissionMode: "auto" }]);
+    assert.equal(configured.value.session.id, "remote:kimi-t:k3");
   } finally {
     await host.close();
     server.close();

@@ -82,7 +82,12 @@ export function registerRemoteSessionIpc(registrar: IpcRegistrar, getBoot: () =>
     const projectId = text(input.projectId, "projectId", 256);
     const title = input.title === undefined ? undefined : text(input.title, "title", 200);
     if (input.mode !== undefined && !(RACP_SESSION_MODES as readonly unknown[]).includes(input.mode)) invalid("mode");
-    if (input.permissionMode !== undefined && !(RACP_PERMISSION_MODES as readonly unknown[]).includes(input.permissionMode)) invalid("permissionMode");
+    // RACP hosts take a PI permission mode; Perch/Kimi take the runtime's own
+    // option id (e.g. "always-ask", "workspace-auto"), validated by the bridge.
+    const hasRuntime = typeof input.provider === "string" && input.provider.trim();
+    if (input.permissionMode !== undefined && !hasRuntime
+      && !(RACP_PERMISSION_MODES as readonly unknown[]).includes(input.permissionMode)) invalid("permissionMode");
+    if (input.permissionMode !== undefined && typeof input.permissionMode !== "string") invalid("permissionMode");
     const parsed: RemoteHostCreateSessionRequest = {
       hostKey: key, projectId, ...(title ? { title } : {}),
       ...(input.mode ? { mode: input.mode as RemoteHostCreateSessionRequest["mode"] } : {}),

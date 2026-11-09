@@ -312,12 +312,17 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
       })) as KimiSession;
       registerSessionBackend(created.id);
       // The model and permission mode are per-prompt fields on Kimi; chosen
-      // values are recorded on the session's backend for the next prompt.
-      if (input.model || input.permissionMode) {
+      // values are recorded on the session's backend for the next prompt. PI's
+      // placeholder ("ask"/"inherit") means "the runtime default" — Kimi's is
+      // manual — and must not be forwarded as a literal mode.
+      const requestedPermission = input.permissionMode === "ask" || input.permissionMode === "inherit"
+        ? undefined
+        : input.permissionMode;
+      if (input.model || requestedPermission) {
         const backend = createKimiBackend({ hostKey: options.hostKey, client: live, sessionModels, sessionPermissions, log });
         await backend.invoke(IPC.invoke.sessionConfigure, [
           { sessionId: makeRemoteSessionId(options.hostKey, created.id) },
-          { ...(input.model ? { modelId: input.model } : {}), ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}) },
+          { ...(input.model ? { modelId: input.model } : {}), ...(requestedPermission ? { permissionMode: requestedPermission } : {}) },
         ]);
       }
       sessionCache = [created, ...sessionCache.filter((s) => s.id !== created.id)];

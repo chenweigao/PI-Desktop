@@ -277,7 +277,7 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
           // Permission-only change: report the refreshed capability.
           const refreshed = await getSummary(hostSessionId);
           return { session: {
-            id: (args[0] as { sessionId?: string }).sessionId ?? hostSessionId,
+            id: typeof args[0] === "string" ? args[0] : ((args[0] as { sessionId?: string })?.sessionId ?? hostSessionId),
             ...(refreshed.model ? { modelId: refreshed.model } : {}),
             ...(refreshed.provider_id ? { providerId: refreshed.provider_id } : {}),
             ...(remotePermissionOf(refreshed) ? { remotePermission: remotePermissionOf(refreshed) } : {}),
@@ -306,7 +306,7 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
         // Return the updated renderer summary so the composer reflects the switch.
         const updated = await getSummary(hostSessionId);
         return { session: {
-          id: (args[0] as { sessionId?: string }).sessionId ?? hostSessionId,
+          id: typeof args[0] === "string" ? args[0] : ((args[0] as { sessionId?: string })?.sessionId ?? hostSessionId),
           modelId: updated.model, providerId: updated.provider_id,
           ...(remotePermissionOf(updated) ? { remotePermission: remotePermissionOf(updated) } : {}),
         } };

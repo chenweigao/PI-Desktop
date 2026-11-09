@@ -159,6 +159,18 @@ test("perch host over real ssh: discover, list, browse, create, prompt-route", {
     rows = await boot.list();
     assert.equal(rows.find((h) => h.hostKey === "localhost-perch").ssh.user, undefined);
     note({ endpointPort: endpoint.port, created: hostSessionId });
+    // A reconnect that fails after a persisted edit reports the saved state,
+    // not an error that suggests the edit was lost.
+    await boot.addHost({
+      hostKey: "unreachable-perch", label: "Unreachable", url: "perch+ssh://no-such-host.invalid",
+      deviceToken: "", metadata: { transport: "ssh", backend: "perch", ssh: { host: "no-such-host.invalid", remotePort: 1 } },
+    }).catch(() => null); // may fail to connect at add; the record persists either way
+    const edited = await boot.updateHost("unreachable-perch", { ssh: { user: process.env.USER || "root" } });
+    assert.equal(editingPersists(edited), true);
+    const listed = (await boot.list()).find((h) => h.hostKey === "unreachable-perch");
+    assert.equal(listed.ssh.user, process.env.USER || "root", "edit persisted despite the failed reconnect");
+    assert.notEqual(listed.status, "connected");
+
     // A fresh boot over the same dataDir (an app restart) keeps the sibling.
     await boot.closeAll();
     const boot2 = createRemoteHostsBoot({
@@ -182,6 +194,10 @@ test("perch host over real ssh: discover, list, browse, create, prompt-route", {
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+function editingPersists(summary) {
+  return summary && summary.hostKey === "unreachable-perch";
+}
 
 function note(data) {
   console.log("· real-ssh", JSON.stringify(data));

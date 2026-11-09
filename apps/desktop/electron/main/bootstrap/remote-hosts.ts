@@ -1014,7 +1014,14 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       if (connectionChanged) {
         await closeLive(key);
         await tunnels.close(key);
-        await openHost(next);
+        // The edit is already persisted; a failed reconnect must not report
+        // the edit as lost. The row shows the real state (action-required when
+        // the failure needs the user) and reconnects on demand.
+        try { await openHost(next); }
+        catch (error) {
+          if (requiresUserAction(error)) actionRequired.add(key);
+          log("warn", "reconnect after a connection edit failed", { hostKey: key, error: String(error) });
+        }
       }
       changed();
       return summaryOf(next);

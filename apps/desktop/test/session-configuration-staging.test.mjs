@@ -58,3 +58,15 @@ test("a failed flush keeps the staged configuration instead of dropping it", () 
   assert.match(flush, /catch \(error\) \{[\s\S]*?failed = true;\n\s*break;/);
   assert.match(flush, /!failed &&\n\s*runtime\.pendingSessionConfigurations\.has\(sessionId\)/);
 });
+
+test("a deferred flush onto a remote session merges instead of replacing the row", () => {
+  const flush = between(
+    sessionCoordination,
+    "function flushPendingSessionConfiguration(",
+    "\n  function rememberSessionCompactions",
+  );
+  // A remote backend answers a partial row; the flush must keep the known
+  // id/source and merge, or the row detaches from its identity.
+  assert.match(flush, /isRemoteSession\(session\)/);
+  assert.match(flush, /\.\.\.session,\n\s*\.\.\.result\.session,\n\s*id: session\.id,\n\s*source: session\.source,/);
+});
