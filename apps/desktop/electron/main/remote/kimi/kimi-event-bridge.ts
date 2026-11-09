@@ -182,7 +182,11 @@ export function createKimiEventBridge(options: KimiEventBridgeOptions): KimiEven
       state.lastSeq = seq;
 
       /* ---- approvals ---- */
-      const open = snapshot.pending_approvals ?? [];
+      // kimi web ≥2.4 stamps expires_at; an expired approval can never be
+      // answered (the service reports INTERACTION_ENDED), so never show it.
+      const nowMs = Date.now();
+      const open = (snapshot.pending_approvals ?? []).filter((item) =>
+        !item.expires_at || Date.parse(item.expires_at) > nowMs);
       const currentIds = new Set(open.map((item) => item.approval_id));
       for (const id of state.liveApprovals) {
         if (!currentIds.has(id)) {

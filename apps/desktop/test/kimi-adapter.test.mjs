@@ -307,3 +307,14 @@ test("kimi approval cards allow the native session scope", async () => {
   const snapshot = events.find((e) => e.payload?.kind === "snapshot");
   assert.notEqual(snapshot.payload.permissions[0].sessionGrant, false);
 });
+
+test("an expired approval never surfaces a card", () => {
+  const events = [];
+  const bridge = createKimiEventBridge({ hostKey: "k", emit: (c, p) => events.push({ channel: c, payload: p }) });
+  bridge.applySnapshot("s1", { session: { id: "s1", busy: true }, pending_approvals: [
+    { approval_id: "old", tool_name: "bash", expires_at: new Date(Date.now() - 1000).toISOString() },
+    { approval_id: "live", tool_name: "write", expires_at: new Date(Date.now() + 60_000).toISOString() },
+  ], messages: { items: [] } });
+  const snapshot = events.find((e) => e.payload?.kind === "snapshot");
+  assert.deepEqual(snapshot.payload.permissions.map((x) => x.toolName), ["write"]);
+});

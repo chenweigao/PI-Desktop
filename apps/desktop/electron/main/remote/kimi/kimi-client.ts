@@ -150,6 +150,8 @@ export type KimiSession = {
 export type KimiApproval = {
   approval_id: string; tool_name?: string; action?: string;
   tool_input_display?: unknown; agent_id?: string;
+  /** kimi web ≥2.4: ISO time after which the approval can no longer be answered. */
+  expires_at?: string;
 };
 
 export type KimiQuestionOption = { id: string; label: string; description?: string };
