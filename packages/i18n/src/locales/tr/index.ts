@@ -2207,6 +2207,7 @@ sklm: {
     title: "İzin gerekiyor",
     allowPrompt: "<highlight>{{tool}}</highlight> çalıştırılsın mı?",
     allowOnce: "Bir kez izin ver",
+    sessionGrantUnsupported: "Bu çalışma zamanı her isteği ayrı ayrı onaylar.",
     allowSession: "Bu sohbet için izin ver",
     deny: "Reddet",
     risk: {

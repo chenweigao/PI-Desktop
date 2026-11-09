@@ -2197,6 +2197,7 @@ sklm: {
     "title": "Autorisation requise",
     "allowPrompt": "Autoriser <highlight>{{tool}}</highlight> à s'exécuter ?",
     "allowOnce": "Autoriser une fois",
+    sessionGrantUnsupported: "Ce runtime approuve uniquement au cas par cas.",
     "allowSession": "Autoriser cette discussion",
     "deny": "Refuser",
     "risk": {

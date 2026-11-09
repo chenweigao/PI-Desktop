@@ -2217,6 +2217,7 @@ sklm: {
     title: "Permission needed",
     allowPrompt: "Allow <highlight>{{tool}}</highlight> to run?",
     allowOnce: "Allow once",
+    sessionGrantUnsupported: "This runtime approves each request individually.",
     allowSession: "Allow for this chat",
     deny: "Deny",
     risk: {

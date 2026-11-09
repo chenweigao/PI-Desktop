@@ -2167,6 +2167,7 @@ export const ptBR = {
     title: "Permissão necessária",
     allowPrompt: "Permitir a execução de <highlight>{{tool}}</highlight>?",
     allowOnce: "Permitir uma vez",
+    sessionGrantUnsupported: "Este runtime aprova apenas individualmente.",
     allowSession: "Permitir nesta conversa",
     deny: "Negar",
     risk: {

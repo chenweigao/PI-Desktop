@@ -161,6 +161,9 @@ export type ToolPermissionRequest = {
   reason: string;
   /** Subagent that asked, when the call came from a delegate (ADR 0062). */
   agentName?: string;
+  /** False when the runtime has no session-scoped grant (e.g. Kimi): the
+   * allow-session action is disabled with a reason instead of erroring. */
+  sessionGrant?: boolean;
   /** `Task` call that spawned the asking delegate. */
   parentToolCallId?: string;
   /** Immediate tool parent when this request came from nested execution. */

@@ -2213,6 +2213,7 @@ sklm: {
     title: "권한 필요",
     allowPrompt: "<highlight>{{tool}}</highlight> 실행을 허용할까요?",
     allowOnce: "한 번 허용",
+    sessionGrantUnsupported: "이 런타임은 매번 개별 승인만 지원합니다.",
     allowSession: "이 채팅에서 허용",
     deny: "거부",
     risk: {

@@ -294,3 +294,11 @@ test("permission mode: configure stores it, the next prompt carries permission_m
   assert.equal(got.session.remotePermission.scope, "next-message");
   await new Promise((r) => bridge.server.close(r));
 });
+
+test("kimi approval cards declare no session grant, so the UI never offers allow-session", async () => {
+  const events = [];
+  const b2 = createKimiEventBridge({ hostKey: "dev", emit: (c, p) => events.push({ channel: c, payload: p }) });
+  b2.applySnapshot("s1", { session: { id: "s1", busy: true }, pending_approvals: [{ approval_id: "a1", tool_name: "bash", action: "run" }], messages: { items: [] } });
+  const snapshot = events.find((e) => e.payload?.kind === "snapshot");
+  assert.equal(snapshot.payload.permissions[0].sessionGrant, false);
+});

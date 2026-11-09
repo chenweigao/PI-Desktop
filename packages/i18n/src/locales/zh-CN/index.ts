@@ -2192,6 +2192,7 @@ sklm: {
     title: "需要权限",
     allowPrompt: "允许 <highlight>{{tool}}</highlight> 运行吗？",
     allowOnce: "允许一次",
+    sessionGrantUnsupported: "该运行时只能逐次批准。",
     allowSession: "允许本次对话",
     deny: "拒绝",
     risk: {

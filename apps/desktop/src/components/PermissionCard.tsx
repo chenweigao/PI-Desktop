@@ -111,13 +111,21 @@ export function PermissionCard({
         >
           {t("permission.deny")}
         </Button>
-        <Button
-          variant="secondary"
-          disabled={resolving}
-          onClick={() => void resolve("allow-session")}
-        >
-          {t("permission.allowSession")}
-        </Button>
+        {permission.sessionGrant !== false ? (
+          <Button
+            variant="secondary"
+            disabled={resolving}
+            onClick={() => void resolve("allow-session")}
+          >
+            {t("permission.allowSession")}
+          </Button>
+        ) : (
+          <span className="permission-card-session-grant-off" title={t("permission.sessionGrantUnsupported")}>
+            <Button variant="secondary" disabled>
+              {t("permission.allowSession")}
+            </Button>
+          </span>
+        )}
         <Button
           variant="primary"
           disabled={resolving}
