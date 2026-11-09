@@ -91,6 +91,9 @@ function splitOmpTitle(title: string | undefined): { toolName: string; command?:
  * title are questions (ask cards); everything else is a tool approval.
  */
 export function classifyPerchInteraction(interaction: PerchInteraction): "permission" | "ask" {
+  // dsh ACP permission requests are tool approvals even though their select
+  // options carry no "Allow tool:" title (the id prefix names them).
+  if (interaction.id.startsWith("acp-permission-")) return "permission";
   if (interaction.name === "AskUserQuestion") return "ask";
   if (interaction.method === "input" || interaction.method === "editor") return "ask";
   if (interaction.method === "select" && !/^Allow tool:/.test((interaction.title ?? "").trim())) return "ask";

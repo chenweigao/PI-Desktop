@@ -703,3 +703,92 @@ test("sessionConfigure permission: next-turn runtimes POST /permission, new-sess
   assert.equal(posted.length, 1, "new-session runtime change reached the bridge");
   await new Promise((r) => bridge.server.close(r));
 });
+
+test("Qoder/Claude approvals (no method) answer as allow/deny, remember by tool name, auto-approve on the next poll", async () => {
+  // Host-level: fake bridge HTTP + fake tunnel, real PerchHost poller.
+  const { createPerchHost } = await import("../electron/main/remote/perch/perch-host.ts");
+  const state = {
+    interactions: [{ id: "qa-1", type: "interaction", name: "bash", input: { command: "ls -la" } }],
+    answers: [], revision: 1, busy: true, turnId: "t-1",
+    sessions: [] ,
+  };
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://x");
+    const reply = (code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+    if (req.headers.authorization !== "Bearer t") return reply(401, { error: "Unauthorized" });
+    const body = req.method === "POST" ? JSON.parse(await new Promise((r) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => r(b || "{}")); })) : {};
+    if (req.method === "GET" && url.pathname === "/sessions") return reply(200, { sessions: state.sessions });
+    if (req.method === "POST" && url.pathname === "/sessions") {
+      const created = { id: "q1", provider: "qoder", title: "q", cwd: body.cwd, busy: true, updated: 1, revision: 1, pending: 1, model: "m", permission: { selected: "default", options: ["default", "plan"], scope: "next-turn" } };
+      state.sessions = [created];
+      return reply(200, created);
+    }
+    if (url.pathname === "/sessions/q1") {
+      const base = state.sessions[0] ?? { id: "q1", provider: "qoder", cwd: "/srv" };
+      return reply(200, { ...base, busy: state.busy, revision: state.revision, turnId: state.turnId, pending: state.interactions.length, interactions: state.interactions, messages: [] });
+    }
+    if (req.method === "POST" && url.pathname === "/sessions/q1/answer") {
+      const idx = state.interactions.findIndex((i) => i.id === body.id);
+      if (idx < 0) return reply(400, { error: "gone" });
+      state.interactions.splice(idx, 1); state.answers.push(body); state.revision++;
+      return reply(200, { ok: true });
+    }
+    return reply(404, { error: "unknown" });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const port = server.address().port;
+  const events = [];
+  const { createBackendRouter } = await import("../electron/main/remote/backend-router.ts");
+  const router = createBackendRouter();
+  const host = createPerchHost({
+    hostKey: "qoder-t", label: "Qoder T", router,
+    tunnels: { open: async () => ({ url: `http://127.0.0.1:${port}`, close: async () => {} }), adopt: async () => { throw new Error("n/a"); }, close: async () => {} },
+    ssh: { host: "127.0.0.1", remotePort: port },
+    discoverEndpoint: async () => ({ port, token: "t" }),
+    buildTransport: () => ({ exec: async () => ({ stdout: "", stderr: "", code: 0 }), execWithInput: async () => ({ stdout: "", stderr: "", code: 0 }), forward: async () => ({ localPort: port, close: async () => {} }), dispose: () => {} }),
+    pollMs: { busy: 80, idle: 160 },
+    emit: (channel, payload) => events.push({ channel, payload }),
+    log: () => undefined,
+  });
+  try {
+    await host.connect();
+    const created = await host.createSession({ cwd: "/srv", provider: "qoder", model: "m" });
+    const remoteId = makeRemoteSessionId("qoder-t", created.id);
+    // The approval surfaces as a permission card with the real tool name.
+    const card = await new Promise((resolve, reject) => {
+      const deadline = Date.now() + 5000;
+      const tick = () => {
+        const hit = events.find((e) => e.channel === IPC.event.remoteInteractions && e.payload?.kind === "snapshot"
+          && e.payload.sessionId === remoteId && (e.payload.permissions ?? []).length > 0);
+        if (hit) return resolve(hit.payload.permissions[0]);
+        if (Date.now() > deadline) return reject(new Error("no permission card for the qoder interaction"));
+        setTimeout(tick, 40);
+      };
+      tick();
+    });
+    assert.equal(card.toolName, "bash");
+    // allow-session answers this one and remembers the tool by its `name`.
+    await router.route(IPC.invoke.toolResolvePermission, [{ requestId: card.requestId, decision: "allow-session" }]);
+    assert.deepEqual(state.answers.at(-1), { id: "qa-1", allow: true }, "qoder answer shape is {id, allow}");
+    // The next identical tool request is auto-approved by the poller before a
+    // card surfaces — the repeated-approval loop is broken.
+    state.interactions.push({ id: "qa-2", type: "interaction", name: "bash", input: { command: "pwd" } });
+    state.revision++;
+    const deadline = Date.now() + 5000;
+    while (state.interactions.length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 60));
+    assert.equal(state.interactions.length, 0, "remembered tool was not auto-approved");
+    assert.deepEqual(state.answers.at(-1), { id: "qa-2", allow: true });
+    const lateCards = events.filter((e) => e.channel === IPC.event.remoteInteractions && e.payload?.kind === "snapshot"
+      && (e.payload.permissions ?? []).some((p) => p.requestId.endsWith("qa-2")));
+    assert.equal(lateCards.length, 0, "auto-approved request still surfaced a card");
+  } finally {
+    await host.close();
+    server.close();
+  }
+});
+
+test("dsh ACP permission selects classify as approvals, not questions", async () => {
+  const { classifyPerchInteraction } = await import("../electron/main/remote/perch/perch-event-bridge.ts");
+  assert.equal(classifyPerchInteraction({ id: "acp-permission-7", method: "select", title: "Run command", options: ["Allow", "Deny"] }), "permission");
+});

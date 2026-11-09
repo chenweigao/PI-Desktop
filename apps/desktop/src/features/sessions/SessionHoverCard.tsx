@@ -96,6 +96,14 @@ export function SessionHoverCard({
     return () => observer.disconnect();
   }, [target]);
 
+  // A remote session's PI-mode placeholder ("ask") is not the truth — show
+  // the runtime's own selected permission option when we have it.
+  const remotePermission = session.remotePermission;
+  const remotePermissionLabel = remotePermission?.selected
+    ? t(`chat.remotePermissionOption.${session.remoteAgent}.${remotePermission.selected}`, {
+        defaultValue: t(`chat.remotePermissionOption.${remotePermission.selected}`, { defaultValue: remotePermission.selected }),
+      })
+    : null;
   const modeKey = session.mode === "plan" ? "chat.modePlan"
     : session.mode === "goal" ? "chat.modeGoal"
       : session.permissionMode === "auto" ? "chat.permissionAuto"
@@ -143,7 +151,7 @@ export function SessionHoverCard({
             {t("sessionCollaboration.sessionTask")}
           </span>
         ) : null}
-        <span className="sidebar-session-hover-card-tag sidebar-session-hover-card-tag-accent">{t(modeKey)}</span>
+        <span className="sidebar-session-hover-card-tag sidebar-session-hover-card-tag-accent">{remotePermissionLabel ?? t(modeKey)}</span>
         <span className="sidebar-session-hover-card-status" data-status={readState === "ready" ? summary?.status : readState}>
           {readState === "ready" && summary
             ? t(collaborationStatusKey(summary.status))

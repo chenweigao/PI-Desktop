@@ -239,20 +239,31 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
         // (the snapshot still carries the interaction).
         const allowed = sessionAllowedTools.get(hostSessionId);
         if (allowed?.size && client) {
-          for (const interaction of (snapshot as { interactions?: Array<{ id: string; method?: string; title?: string; options?: string[] }> }).interactions ?? []) {
-            const toolName = interaction.title?.match(/^Allow tool:\s*([^\n]+)/)?.[1]?.trim();
+          const autoApproved = new Set<string>();
+          for (const interaction of (snapshot as { interactions?: Array<{ id: string; method?: string; name?: string; title?: string; options?: string[] }> }).interactions ?? []) {
+            // OMP names the tool in the "Allow tool:" title; Qoder/Claude in `name`.
+            const toolName = interaction.name ?? interaction.title?.match(/^Allow tool:\s*([^\n]+)/)?.[1]?.trim();
             if (!toolName || !allowed.has(toolName)) continue;
             try {
               if (interaction.method === "select") {
                 const option = interaction.options?.find((o) => /^approve$/i.test(o));
                 if (!option) continue; // no single-use approve: leave the card
                 await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/answer`, { id: interaction.id, value: option });
-              } else if (interaction.method === "confirm") {
+              } else {
+                // confirm (OMP) and method-less (Qoder/Claude) both take {allow}.
                 await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/answer`, { id: interaction.id, allow: true });
               }
+              autoApproved.add(interaction.id);
             } catch (error) {
               log("warn", "auto-approve failed; the card stays visible", { hostSessionId, id: interaction.id, error: String(error) });
             }
+          }
+          if (autoApproved.size) {
+            // The snapshot was read before the answers landed; strip answered
+            // requests so an auto-approved tool never flashes a card for one
+            // poll cycle.
+            const snap = snapshot as { interactions?: Array<{ id: string }> };
+            snap.interactions = (snap.interactions ?? []).filter((item) => !autoApproved.has(item.id));
           }
         }
         bridge.applySnapshot(hostSessionId, snapshot as never);

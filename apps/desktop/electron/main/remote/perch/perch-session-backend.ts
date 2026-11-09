@@ -320,7 +320,7 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
         // Read the live interaction to pick the right answer shape: an OMP
         // `confirm` takes {confirmed}, a select/input/editor takes {value}.
         const snap = await snapshot(hostSessionId);
-        const interactions = (snap.interactions ?? []) as Array<{ id: string; method?: string }>;
+        const interactions = (snap.interactions ?? []) as PerchInteraction[];
         const target = interactions.find((item) => item.id === parsed.hostApprovalId);
         if (!target) {
           // Stale / already-resolved id: fail closed rather than guess.
@@ -328,12 +328,16 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
         }
         // A session-scoped allow remembers the tool: later requests for the
         // same tool on this session auto-approve, so the user is not asked
-        // again (Qoder/OMP have no native per-session grant; the adapter owns it).
+        // again (Qoder/OMP have no native per-session grant; the adapter owns
+        // it). Qoder/Claude interactions name the tool in `name`; OMP carries
+        // the "Allow tool: <name>" title.
         const rememberTool = resolution.decision === "allow-session"
-          ? (target as { title?: string }).title?.match(/^Allow tool:\s*([^\n]+)/)?.[1]?.trim()
+          ? (target.name ?? (target as { title?: string }).title?.match(/^Allow tool:\s*([^\n]+)/)?.[1]?.trim())
           : undefined;
         const body: Record<string, unknown> = { id: parsed.hostApprovalId };
-        if (target.method === "confirm") {
+        // Qoder/Claude interactions carry no `method`: the bridge forwards
+        // {id, allow} to the runtime as-is, exactly like Perch's own UI.
+        if (!target.method || target.method === "confirm") {
           // confirm has one answer; allow-once and allow-session both approve
           // this request. allow-session additionally remembers the tool so
           // later identical requests auto-approve.
