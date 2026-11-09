@@ -145,5 +145,36 @@ if (approval) {
 } else {
   console.log("· approval.not-raised (model did not call a tool; boundary noted, not faked)");
 }
+/* ---- question round: the model asks via its ask tool; we answer ---- */
+await router.route(IPC.invoke.sessionConfigure, [{ sessionId: remoteId(sid) }, { permissionMode: "yolo" }]);
+await route(IPC.invoke.agentPrompt, {
+  sessionId: remoteId(sid),
+  content: "Use your ask-user question tool to ask me exactly one question with two options: red or blue. Wait for my answer, then reply with just the color I picked.",
+  messageId: `ask-${marker}`,
+});
+const askDeadline = Date.now() + 120_000;
+let ask = null;
+for (;;) {
+  const hit = events.find((e) => e.channel === IPC.event.remoteInteractions && e.payload?.kind === "snapshot"
+    && e.payload.sessionId === remoteId(sid) && (e.payload.asks ?? []).length > 0);
+  if (hit) { ask = hit.payload.asks[0]; break; }
+  if (Date.now() > askDeadline) break;
+  await sleep(400);
+}
+if (ask) {
+  console.log("· ask.shown", JSON.stringify(ask.questions.map((q) => q.question)));
+  await route(IPC.invoke.askToolResolve, { requestId: ask.requestId, answers: [["blue"]] });
+  console.log("· ask.answered");
+  const settle2 = Date.now() + 120_000;
+  for (;;) {
+    const { session } = await route(IPC.invoke.sessionGet, { id: remoteId(sid) });
+    const done = session.messages.some((m) => m.role === "assistant" && typeof m.content === "string" && /blue/i.test(m.content));
+    if (done) { console.log("· ask.turn-continued (answer in transcript)"); break; }
+    if (Date.now() > settle2) throw new Error("turn did not continue with the answer");
+    await sleep(600);
+  }
+} else {
+  console.log("· ask.not-raised (model did not ask; boundary noted, not faked)");
+}
 await host.close();
-console.log("PASS kimi adapter: create/prompt/reply through the production path with a real model");
+console.log("PASS kimi adapter: create/prompt/reply/approval/question through the production path with a real model");
