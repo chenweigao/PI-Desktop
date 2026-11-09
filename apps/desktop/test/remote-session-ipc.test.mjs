@@ -3,6 +3,7 @@ import { register } from "node:module";
 import test from "node:test";
 import { IPC } from "@pi-desktop/shared";
 register(new URL("./helpers/ts-import-hooks.mjs", import.meta.url));
+register(new URL("./helpers/electron-stub-hooks.mjs", import.meta.url));
 const { registerRemoteSessionIpc } = await import("../electron/main/ipc/remote-session-ipc.ts");
 
 function harness(createSession) {
@@ -44,4 +45,32 @@ test("createSession without a runtime still validates PI permission modes", asyn
   });
   await ok.get(IPC.invoke.remoteHostCreateSession)({ hostKey: "h", projectId: "/srv", permissionMode: "ask" });
   assert.equal(seen[0].permissionMode, "ask");
+});
+
+test("addPerch reports the auto-registered Kimi sibling; probe failures stay silent", async () => {
+  const { registerRemoteHostIpc } = await import("../electron/main/ipc/remote-host-ipc.ts");
+  const perchSummary = { hostKey: "dev-box-x", label: "X", url: "perch+ssh://x", connected: true, backend: "perch" };
+  const kimiSummary = { hostKey: "dev-box-x-kimi", label: "X · Kimi", url: "kimi+ssh://x", connected: false, backend: "kimi", siblingOf: "dev-box-x" };
+  const withKimi = new Map();
+  registerRemoteHostIpc({
+    registrar: { handle: (channel, handler) => withKimi.set(channel, handler) },
+    getRemoteHostsBoot: () => ({
+      addHost: async () => perchSummary,
+      probeKimiSibling: async () => kimiSummary,
+    }),
+  });
+  const added = await withKimi.get(IPC.invoke.remoteHostAddPerch)({ host: "x", label: "X" });
+  assert.deepEqual(added.alsoAdded, kimiSummary, "the sibling rides the add response");
+
+  const withoutKimi = new Map();
+  registerRemoteHostIpc({
+    registrar: { handle: (channel, handler) => withoutKimi.set(channel, handler) },
+    getRemoteHostsBoot: () => ({
+      addHost: async () => perchSummary,
+      probeKimiSibling: async () => { throw new Error("ssh down"); },
+    }),
+  });
+  const plain = await withoutKimi.get(IPC.invoke.remoteHostAddPerch)({ host: "x", label: "X" });
+  assert.equal(plain.alsoAdded, undefined, "a failed probe never breaks the add");
+  assert.deepEqual(plain.host, perchSummary);
 });
