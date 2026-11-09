@@ -1533,6 +1533,7 @@ sklm: {
       runtimeCredentialsMissing: "Oturum açma gerekli",
       runtimeSdkMissing: "Aracı SDK eksik",
       runtimeRegistered: "Kayıtlı",
+      linkedTo: "{{label}} ile bağlantılı",
       runtimeUnverified: "Henüz doğrulanmadı",
       kimiSiblingAdded: "Bu makinede Kimi Code CLI da kullanılabilir — {{label}} olarak eklendi.",
       sshAuthMode: "Kimlik doğrulama",

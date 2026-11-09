@@ -1383,6 +1383,7 @@ sklm: {
       runtimeCredentialsMissing: "Sign-in required",
       runtimeSdkMissing: "Agent SDK missing",
       runtimeRegistered: "Registered",
+      linkedTo: "linked to {{label}}",
       runtimeUnverified: "Not yet verified",
       kimiSiblingAdded: "Kimi Code CLI is available on this machine too — added as {{label}}.",
       sshAuthMode: "Auth",

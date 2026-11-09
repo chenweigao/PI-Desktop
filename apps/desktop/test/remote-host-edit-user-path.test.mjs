@@ -31,6 +31,9 @@ const records = new Map();
 records.set("host-1", { hostKey: "host-1", label: "Build Box", url: "local-tunnel://host-1",
   connected: true, status: "connected", transport: "ssh", backend: "perch",
   ssh: { host: "old.example.com", user: "alice", port: 2222, identityFile: "/keys/id_ed25519" } });
+records.set("host-1-kimi", { hostKey: "host-1-kimi", label: "Build Box · Kimi", url: "kimi+ssh://old.example.com",
+  connected: true, status: "connected", transport: "ssh", backend: "kimi", siblingOf: "host-1",
+  ssh: { host: "old.example.com", user: "alice", port: 2222, identityFile: "/keys/id_ed25519", remotePort: 58627 } });
 const updates = [];
 const summary = (record) => JSON.parse(JSON.stringify(record));
 window.piDesktop = { platform: "linux", channels: IPC,
@@ -100,6 +103,10 @@ const errorText = () => document.querySelector(".settings-remote-hosts [role='al
 mount();
 window.remoteHostEditProbe = async () => {
   await until(() => editButton(), "host inventory did not render");
+  // The Kimi sibling card is grouped with its machine, not a second mystery host.
+  check(document.body.textContent.includes(label("linkedTo").split("{{label}}")[0].trim()) === false
+    || document.body.textContent.includes("linked to Build Box"),
+    "sibling card did not name its parent host");
   // Hydration: the edit form shows every stored SSH field.
   await openEditor();
   check(input("sshHost").value === "old.example.com", "host not hydrated");

@@ -78,6 +78,8 @@ export type RemoteHostSummary = {
   ssh?: { host: string; user?: string; port?: number; identityFile?: string; remotePort?: number };
   /** The bridge backend kind (racp default; perch/kimi for the new channels). */
   backend?: string;
+  /** A Kimi sibling channel shares this Perch host's saved SSH connection. */
+  siblingOf?: string;
 };
 
 /**

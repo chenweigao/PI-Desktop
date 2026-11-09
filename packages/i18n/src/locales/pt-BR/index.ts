@@ -1351,6 +1351,7 @@ export const ptBR = {
       runtimeCredentialsMissing: "Login necessário",
       runtimeSdkMissing: "SDK do agente ausente",
       runtimeRegistered: "Registrado",
+      linkedTo: "vinculado a {{label}}",
       runtimeUnverified: "Ainda não verificado",
       kimiSiblingAdded: "Kimi Code CLI também está disponível nesta máquina — adicionado como {{label}}.",
       sshAuthMode: "Autenticação",

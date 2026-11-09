@@ -504,6 +504,9 @@ export function RemoteHostsPage() {
                     : host.transport === "ssh"
                       ? t("settings.remoteHosts.transportSsh")
                       : host.url}
+                  {host.siblingOf
+                    ? ` · ${t("settings.remoteHosts.linkedTo", { label: hosts?.find((h) => h.hostKey === host.siblingOf)?.label ?? host.siblingOf })}`
+                    : ""}
                 </div>
               </div>
               <span className="settings-remote-host-card-actions">

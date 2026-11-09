@@ -1533,6 +1533,7 @@ sklm: {
       "runtimeCredentialsMissing": "Connexion requise",
       "runtimeSdkMissing": "SDK d'agent manquant",
       "runtimeRegistered": "Enregistré",
+      "linkedTo": "lié à {{label}}",
       "runtimeUnverified": "Pas encore vérifié",
       "kimiSiblingAdded": "Kimi Code CLI est aussi disponible sur cette machine — ajouté comme {{label}}.",
       "sshAuthMode": "Auth",

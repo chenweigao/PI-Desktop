@@ -455,7 +455,8 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
         : actionRequired.has(record.hostKey) ? "action-required" : "disconnected";
       return { hostKey: record.hostKey, label: record.label, url: record.url,
         connected: isLive, status, transport: transportOf(record),
-        ...(sshSummaryOf(record) ? { ssh: sshSummaryOf(record) } : {}), backend: backendOf(record) };
+        ...(sshSummaryOf(record) ? { ssh: sshSummaryOf(record) } : {}), backend: backendOf(record),
+        ...(typeof record.metadata?.siblingOf === "string" ? { siblingOf: record.metadata.siblingOf } : {}) };
     }
     if (isKimiRecord(record)) {
       const live = openedKimi.get(record.hostKey);
@@ -464,7 +465,8 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
         : actionRequired.has(record.hostKey) ? "action-required" : "disconnected";
       return { hostKey: record.hostKey, label: record.label, url: record.url,
         connected: isLive, status, transport: transportOf(record),
-        ...(sshSummaryOf(record) ? { ssh: sshSummaryOf(record) } : {}), backend: backendOf(record) };
+        ...(sshSummaryOf(record) ? { ssh: sshSummaryOf(record) } : {}), backend: backendOf(record),
+        ...(typeof record.metadata?.siblingOf === "string" ? { siblingOf: record.metadata.siblingOf } : {}) };
     }
     const state = opened.get(record.hostKey)?.adapter.state();
     const status: RemoteHostConnectionStatus = state === "connected" || state === "connecting" || state === "reconnecting"
@@ -472,7 +474,8 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       : state === "error" || actionRequired.has(record.hostKey) ? "action-required" : "disconnected";
     return { hostKey: record.hostKey, label: record.label, url: opened.get(record.hostKey)?.url ?? record.url,
       connected: status === "connected", status, transport: transportOf(record),
-      ...(sshSummaryOf(record) ? { ssh: sshSummaryOf(record) } : {}), backend: backendOf(record) };
+      ...(sshSummaryOf(record) ? { ssh: sshSummaryOf(record) } : {}), backend: backendOf(record),
+        ...(typeof record.metadata?.siblingOf === "string" ? { siblingOf: record.metadata.siblingOf } : {}) };
   }
   async function addRecord(record: RemoteHostRecord): Promise<RemoteHostSummary> {
     assertOpen();

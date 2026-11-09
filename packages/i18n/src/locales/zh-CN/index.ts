@@ -1523,6 +1523,7 @@ sklm: {
       runtimeCredentialsMissing: "需要登录",
       runtimeSdkMissing: "缺少 Agent SDK",
       runtimeRegistered: "已登记",
+      linkedTo: "关联到 {{label}}",
       runtimeUnverified: "未验证",
       kimiSiblingAdded: "这台机器上也有 Kimi Code CLI 服务——已一并添加为 {{label}}。",
       sshAuthMode: "认证",
