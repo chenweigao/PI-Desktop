@@ -355,3 +355,80 @@ test("review: kimi host summaries carry the permission capability, pending next-
     server.close();
   }
 });
+
+test("review: selecting an idle remote session reads its detail, never commits an empty pane", async () => {
+  initialize();
+  const idle = createdSession("perch-a", "/srv/idle", "s-idle");
+  useAppStore.setState({ sessions: [idle] });
+  const calls = bridge((channel) => {
+    if (channel === IPC.invoke.sessionGet) return { session: { ...idle, messages: [{ id: "m1", role: "assistant", content: "real history", createdAt: at(2) }] } };
+    return defaultRead(channel);
+  });
+  await useAppStore.getState().selectSession(idle.id);
+  assert.ok(
+    calls.some((call) => call.channel === IPC.invoke.sessionGet && call.input?.id === idle.id),
+    "a remote session with no cached transcript must read its real detail",
+  );
+
+  // And when the detail read fails, the pane must not have committed an empty
+  // transcript over real history first.
+  initialize();
+  const failing = createdSession("perch-a", "/srv/idle", "s-idle-fail");
+  useAppStore.setState({ sessions: [failing] });
+  bridge((channel) => {
+    if (channel === IPC.invoke.sessionGet) throw new Error("host dropped");
+    return defaultRead(channel);
+  });
+  await useAppStore.getState().selectSession(failing.id).catch(() => undefined);
+  const cached = useAppStore.getState().sessionHistory[failing.id];
+  assert.notEqual(cached?.hasMoreBefore, false, "an empty window was committed over real history");
+});
+
+test("kimi inventory follows has_more pages so late sessions still get backends", async () => {
+  const { createKimiHost } = await import("../electron/main/remote/kimi/kimi-host.ts");
+  const { createBackendRouter } = await import("../electron/main/remote/backend-router.ts");
+  const { createServer } = await import("node:http");
+  const { once } = await import("node:events");
+  const all = Array.from({ length: 120 }, (_, i) => ({ id: `s${String(i).padStart(3, "0")}`, title: `s${i}`, metadata: { cwd: "/srv" } }));
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://x");
+    const reply = (code, data, status = 200) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify({ code, msg: "ok", data })); };
+    if (url.pathname === "/api/v1/sessions" && req.method === "GET") {
+      const before = url.searchParams.get("before");
+      const start = before ? all.findIndex((s) => s.id === before) + 1 : 0;
+      const items = all.slice(start, start + 100);
+      return reply(0, { items, has_more: start + 100 < all.length });
+    }
+    const m = url.pathname.match(/^\/api\/v1\/sessions\/([^/:]+)\/snapshot$/);
+    if (m) return reply(0, { as_of_seq: 1, epoch: "e1", session: { id: m[1], busy: false, metadata: { cwd: "/srv" } }, messages: { items: [], has_more: false }, pending_approvals: [], pending_questions: [] });
+    const one = url.pathname.match(/^\/api\/v1\/sessions\/([^/:]+)$/);
+    if (one && req.method === "GET") {
+      const found = all.find((s) => s.id === one[1]);
+      return found ? reply(0, { ...found, busy: false }) : reply(40404, null, 404);
+    }
+    return reply(40404, null, 404);
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const port = server.address().port;
+  const router = createBackendRouter();
+  const host = createKimiHost({
+    hostKey: "kimi-paged", label: "Kimi paged", router,
+    ssh: { host: "127.0.0.1", remotePort: port },
+    discoverEndpoint: async () => ({ port, token: "t" }),
+    buildTransport: () => ({ exec: async () => ({ stdout: "", stderr: "", code: 0 }), execWithInput: async () => ({ stdout: "", stderr: "", code: 0 }), forward: async () => ({ localPort: port, close: async () => {} }), dispose: () => {} }),
+    emit: () => undefined, log: () => undefined,
+  });
+  try {
+    await host.connect();
+    const summaries = host.summaries();
+    assert.equal(summaries.length, 120, "all pages read");
+    assert.ok(summaries.some((s) => s.id === "remote:kimi-paged:s119"), "the second page's sessions are listed");
+    // A page-2 session routes to a live backend.
+    const status = await router.route(IPC.invoke.agentGetStatus, [{ sessionId: "remote:kimi-paged:s119" }]);
+    assert.equal(status.remote, true, "second-page session has a backend");
+  } finally {
+    await host.close();
+    server.close();
+  }
+});

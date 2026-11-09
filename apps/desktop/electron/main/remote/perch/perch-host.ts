@@ -122,6 +122,9 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
   let connected = false;
   let failures = 0;
   let sessionCache: PerchSessionSummary[] = [];
+  // Every session id with a router backend registered by this host; released
+  // on close and reconciled when a session vanishes from the inventory.
+  const registeredSessions = new Set<string>();
   // Session-scoped allow: allow-session remembers the tool; the bridge
   // auto-approves later identical-tool requests on the same session.
   const sessionAllowedTools = new Map<string, Set<string>>();
@@ -186,8 +189,15 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
     return rediscovering;
   }
 
+  function unregisterSessionBackend(hostSessionId: string): void {
+    if (!registeredSessions.delete(hostSessionId)) return;
+    options.router.unregisterBackend(makeRemoteSessionId(options.hostKey, hostSessionId));
+    bridge.forgetSession(hostSessionId);
+  }
+
   function registerSessionBackend(hostSessionId: string): void {
     if (!client) return;
+    registeredSessions.add(hostSessionId);
     const liveClient = client;
     options.router.registerBackend(
       makeRemoteSessionId(options.hostKey, hostSessionId),
@@ -215,6 +225,21 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
       if (ids !== lastInventoryKey) {
         lastInventoryKey = ids;
         options.emit(IPC.event.sessionsChanged, { reason: "perch.sessions.changed" });
+      }
+      // Sessions deleted on the bridge (or while we were down) leave no final
+      // snapshot behind: clear their pending cards and release the backends.
+      const liveIds = new Set(sessions.map((s) => s.id));
+      for (const known of [...lastSeenRevision.keys()]) {
+        if (!liveIds.has(known)) {
+          lastSeenRevision.delete(known);
+          unregisterSessionBackend(known);
+          options.emit(IPC.event.remoteInteractions, {
+            kind: "snapshot",
+            sessionId: makeRemoteSessionId(options.hostKey, known),
+            permissions: [],
+            asks: [],
+          });
+        }
       }
       for (const session of sessions) {
         const hostSessionId = session.id;
@@ -307,6 +332,7 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
       connected = false;
       if (pollTimer) clearTimeout(pollTimer);
       pollTimer = null;
+      for (const hostSessionId of [...registeredSessions]) unregisterSessionBackend(hostSessionId);
       await closeClient();
       sessionCache = [];
       lastSeenRevision.clear();

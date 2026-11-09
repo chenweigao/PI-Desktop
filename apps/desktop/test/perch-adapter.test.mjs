@@ -792,6 +792,30 @@ test("Qoder/Claude approvals (no method) answer as allow/deny, remember by tool 
     const lateCards = events.filter((e) => e.channel === IPC.event.remoteInteractions && e.payload?.kind === "snapshot"
       && (e.payload.permissions ?? []).some((p) => p.requestId.endsWith("qa-2")));
     assert.equal(lateCards.length, 0, "auto-approved request still surfaced a card");
+
+    // A session deleted on the bridge: its backend is released (calls fail
+    // closed as disconnected) and its cards clear via an empty snapshot.
+    state.sessions = [];
+    state.interactions.push({ id: "qa-3", type: "interaction", name: "bash", input: { command: "id" } });
+    state.revision++;
+    // Let one poll deliver the qa-3 card first (proves the card existed).
+    await new Promise((r) => setTimeout(r, 400));
+    state.interactions = [];
+    state.sessions = [];
+    state.revision++;
+    const deadline2 = Date.now() + 5000;
+    for (;;) {
+      const cleared = events.find((e) => e.channel === IPC.event.remoteInteractions && e.payload?.kind === "snapshot"
+        && e.payload.sessionId === remoteId && (e.payload.permissions ?? []).length === 0 && (e.payload.asks ?? []).length === 0);
+      if (cleared) break;
+      if (Date.now() > deadline2) throw new Error("vanished session never cleared its cards");
+      await new Promise((r) => setTimeout(r, 60));
+    }
+    await assert.rejects(
+      router.route(IPC.invoke.agentGetStatus, [{ sessionId: remoteId }]),
+      /disconnected/,
+      "a vanished session must fail closed as disconnected, not reach a dead backend",
+    );
   } finally {
     await host.close();
     server.close();
@@ -801,4 +825,14 @@ test("Qoder/Claude approvals (no method) answer as allow/deny, remember by tool 
 test("dsh ACP permission selects classify as approvals, not questions", async () => {
   const { classifyPerchInteraction } = await import("../electron/main/remote/perch/perch-event-bridge.ts");
   assert.equal(classifyPerchInteraction({ id: "acp-permission-7", method: "select", title: "Run command", options: ["Allow", "Deny"] }), "permission");
+});
+
+test("a bridge restart is detected by history epoch even when the revision moves forward", () => {
+  const emitted = [];
+  const bridge = createPerchEventBridge({ hostKey: "dev", emit: (c, p) => emitted.push({ channel: c, payload: p }) });
+  const sid = makeRemoteSessionId("dev", "s1");
+  bridge.applySnapshot("s1", { busy: true, revision: 5, history: { epoch: "e1", start: 0, total: 1, end: 1 }, messages: [] });
+  bridge.applySnapshot("s1", { busy: true, revision: 9, history: { epoch: "e2", start: 0, total: 1, end: 1 }, messages: [] });
+  const unknown = emitted.find((e) => e.channel === IPC.event.agentMessage && e.payload?.event?.type === "error" && e.payload.event.error?.code === "TURN_UNKNOWN");
+  assert.ok(unknown, "an epoch change with a forward revision must still read as a restart");
 });

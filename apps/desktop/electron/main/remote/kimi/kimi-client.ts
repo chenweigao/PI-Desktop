@@ -121,9 +121,10 @@ export function createKimiClient(options: KimiClientOptions): KimiClient {
     const text = await response.text();
     let envelope: { code?: number; msg?: string; data?: unknown; error?: string } = {};
     if (text) { try { envelope = JSON.parse(text); } catch { envelope = {}; } }
-    // The envelope's business code is authoritative; HTTP 200 with code != 0
-    // is still a failure.
-    const code = envelope.code ?? (response.ok ? 0 : -1);
+    // A 200 without the {code} envelope is not success — a misforwarded port
+    // or a different service answers plain bodies and must fail honestly
+    // instead of surfacing as an empty inventory.
+    const code = typeof envelope.code === "number" ? envelope.code : -1;
     if (!response.ok || code !== 0) {
       const message = envelope.msg ?? envelope.error ?? `kimi request failed (${response.status})`;
       throw new KimiBridgeError(message, response.status, "KIMI_REQUEST_FAILED", code);

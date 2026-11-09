@@ -491,6 +491,10 @@ export function createSessionSlice({
         } else if (
           summary &&
           get().activeSessionId !== id &&
+          // Remote list rows carry no durable message count, so the
+          // reusable-empty fast path would commit an empty pane over real
+          // history; remote sessions always read the detail.
+          !isRemoteSession(summary) &&
           sessionIsReusableEmpty(summary, {
             running: runningAtSelection,
             liveMessageCount: retainedMessages?.length ?? 0,

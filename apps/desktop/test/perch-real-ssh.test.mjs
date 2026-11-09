@@ -183,7 +183,21 @@ test("perch host over real ssh: discover, list, browse, create, prompt-route", {
     const reopenedSibling = reopened.find((h) => h.hostKey === "localhost-perch-kimi");
     assert.ok(reopenedSibling, "kimi sibling persists across an app restart");
     assert.equal(reopenedSibling.label, "Renamed Perch · Kimi", "propagated rename persists");
+    // The sibling keeps a service port at all times: clearing the field
+    // restores the default sentinel, never a brick.
+    await boot2.updateHost("localhost-perch-kimi", { ssh: { remotePort: "" } });
+    const siblingAfterClear = (await boot2.list()).find((h) => h.hostKey === "localhost-perch-kimi");
+    assert.equal(siblingAfterClear.ssh.remotePort, 1, "cleared kimi service port restores the default sentinel");
+
+    // Removing the sibling channel alone leaves the machine's host intact.
+    await boot2.removeHost("localhost-perch-kimi");
+    const afterSiblingRemove = await boot2.list();
+    assert.ok(!afterSiblingRemove.some((h) => h.hostKey === "localhost-perch-kimi"), "sibling removed");
+    assert.ok(afterSiblingRemove.some((h) => h.hostKey === "localhost-perch"), "parent must survive a sibling removal");
+
     // Removing the machine removes the linked Kimi channel with it.
+    await boot2.runtimeStatus("localhost-perch"); // re-register the sibling first
+    assert.ok((await boot2.list()).some((h) => h.hostKey === "localhost-perch-kimi"), "sibling re-registered");
     await boot2.removeHost("localhost-perch");
     const afterRemove = await boot2.list();
     assert.ok(!afterRemove.some((h) => h.hostKey === "localhost-perch"), "primary removed");

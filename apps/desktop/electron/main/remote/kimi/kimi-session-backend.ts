@@ -125,7 +125,7 @@ export function createKimiBackend(options: KimiBackendOptions): RemoteBackend {
             // deduped, so report an honest unknown instead of resending.
             throw Object.assign(
               new Error("prompt outcome unknown after a connection drop; the request was not resent"),
-              { errorCode: "HOST_DISCONNECTED", details: { promptId } },
+              { errorCode: "HOST_DISCONNECTED", data: { promptId } },
             );
           }
           throw error;

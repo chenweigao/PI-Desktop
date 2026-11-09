@@ -124,7 +124,7 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
           log("warn", "perch prompt outcome unknown; receipt unreadable", { requestId, error: String(lookupError) });
           throw Object.assign(
             new Error("prompt outcome unknown after a connection drop; the request was not resent"),
-            { errorCode: "HOST_DISCONNECTED", details: { requestId } },
+            { errorCode: "HOST_DISCONNECTED", data: { requestId } },
           );
         }
       }

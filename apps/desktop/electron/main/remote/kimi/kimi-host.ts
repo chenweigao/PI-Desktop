@@ -133,20 +133,49 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
     return rediscovering;
   }
 
+  // Session ids with a router backend registered by this host; released on
+  // close and reconciled when a session vanishes from the inventory.
+  const registeredSessions = new Set<string>();
+
+  function unregisterSessionBackend(hostSessionId: string): void {
+    if (!registeredSessions.delete(hostSessionId)) return;
+    options.router.unregisterBackend(makeRemoteSessionId(options.hostKey, hostSessionId));
+    bridge.forgetSession(hostSessionId);
+  }
+
   function registerSessionBackend(hostSessionId: string): void {
     if (!client) return;
+    registeredSessions.add(hostSessionId);
     options.router.registerBackend(
       makeRemoteSessionId(options.hostKey, hostSessionId),
       createKimiBackend({ hostKey: options.hostKey, client, sessionModels, sessionPermissions, log }),
     );
   }
 
+  /** The sessions list pages by before_id; read every page so sessions past
+   * the first page still get a router backend and polling. */
+  async function listAllSessions(live: NonNullable<typeof client>): Promise<KimiSession[]> {
+    const all: KimiSession[] = [];
+    let before: string | undefined;
+    for (;;) {
+      // kimi web 2.4 pages the sessions list with limit/before (the id of the
+      // last row), not the messages endpoint's page_size/before_id.
+      const page = (await live.get("/api/v1/sessions", {
+        limit: 100, includeArchived: "true",
+        ...(before ? { before } : {}),
+      })) as { items?: KimiSession[]; has_more?: boolean };
+      const items = page.items ?? [];
+      all.push(...items);
+      if (!page.has_more || items.length === 0) return all;
+      before = items[items.length - 1].id;
+    }
+  }
+
   async function pollOnce(): Promise<boolean> {
     if (closed || !client) return false;
     let anyBusy = false;
     try {
-      const list = (await client.get("/api/v1/sessions", { page_size: 100, include_archive: "true" })) as { items?: KimiSession[] };
-      const sessions = list.items ?? [];
+      const sessions = await listAllSessions(client);
       sessionCache = sessions;
       failures = 0;
       connected = true;
@@ -154,6 +183,21 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
       if (ids !== lastInventoryKey) {
         lastInventoryKey = ids;
         options.emit(IPC.event.sessionsChanged, { reason: "kimi.sessions.changed" });
+      }
+      // A session deleted remotely leaves no final snapshot: clear its cards
+      // and release its backend.
+      const liveIds = new Set(sessions.map((s) => s.id));
+      for (const known of [...lastSeenSeq.keys()]) {
+        if (!liveIds.has(known)) {
+          lastSeenSeq.delete(known);
+          unregisterSessionBackend(known);
+          options.emit(IPC.event.remoteInteractions, {
+            kind: "snapshot",
+            sessionId: makeRemoteSessionId(options.hostKey, known),
+            permissions: [],
+            asks: [],
+          });
+        }
       }
       for (const session of sessions) {
         const hostSessionId = session.id;
@@ -220,6 +264,7 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
       connected = false;
       if (pollTimer) clearTimeout(pollTimer);
       pollTimer = null;
+      for (const hostSessionId of [...registeredSessions]) unregisterSessionBackend(hostSessionId);
       await closeClient();
       sessionCache = [];
       lastSeenSeq.clear();
@@ -227,8 +272,7 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
     isConnected: () => connected && !closed,
     async sessions() {
       const { client: live } = assertLive();
-      const list = (await live.get("/api/v1/sessions", { page_size: 100, include_archive: "true" })) as { items?: KimiSession[] };
-      sessionCache = list.items ?? [];
+      sessionCache = await listAllSessions(live);
       return sessionCache;
     },
     summaries() {

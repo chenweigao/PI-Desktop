@@ -904,7 +904,8 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
           mode: "agent" as SessionSummary["mode"],
           permissionMode: "ask" as SessionSummary["permissionMode"],
           remotePermission: {
-            selected: input.permissionMode ?? created.agent_config?.permission_mode ?? "manual",
+            selected: (input.permissionMode === "ask" || input.permissionMode === "inherit" ? undefined : input.permissionMode)
+              ?? created.agent_config?.permission_mode ?? "manual",
             options: ["manual", "yolo", "auto"],
             scope: "next-message" as RemotePermissionScope,
           },
@@ -958,6 +959,12 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       for (const [field, value] of Object.entries(patchSsh)) {
         if (value === null || value === "") delete mergedSsh[field];
         else mergedSsh[field] = value;
+      }
+      // A Kimi record must always carry a service port; clearing the field
+      // restores the default sentinel (1 = discover the default), never a
+      // brick.
+      if (isKimiRecord(record) && patch.ssh !== undefined && mergedSsh.remotePort === undefined) {
+        mergedSsh.remotePort = 1;
       }
       // The SSH target itself is the one field a patch may never remove: an
       // SSH-transport record without a host can never connect again.
@@ -1070,8 +1077,11 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
     removeHost: (key) => serial(key, async () => {
       const record = (await registry.list()).find((item) => item.hostKey === key);
       // Removing a machine removes the Kimi channel sharing its saved
-      // connection too; the sibling is never left orphaned.
-      const sibling = record ? siblingRecordOf(await registry.list(), record) : undefined;
+      // connection too — one direction only: removing the sibling channel
+      // leaves the parent host intact.
+      const sibling = record && isPerchRecord(record)
+        ? siblingRecordOf(await registry.list(), record)
+        : undefined;
       const keys = [key, ...(sibling ? [sibling.hostKey] : [])];
       for (const each of keys) {
         await closeLive(each);

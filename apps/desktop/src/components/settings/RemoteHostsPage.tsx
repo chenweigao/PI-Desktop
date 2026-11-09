@@ -342,6 +342,10 @@ export function RemoteHostsPage() {
       if (passwordMode && !password) return;
       const user = sshForm.user.trim();
       const port = sshForm.port.trim();
+      if (port && (!/^\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535)) {
+        setError(t("settings.remoteHosts.sshPortInvalid"));
+        return;
+      }
       const identityFile = sshForm.identityFile;
       setInstalling(true);
       try {

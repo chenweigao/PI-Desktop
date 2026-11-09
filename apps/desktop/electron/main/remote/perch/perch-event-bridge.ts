@@ -67,6 +67,9 @@ export type PerchPart =
 type SessionState = {
   busy: boolean;
   lastRevision: number;
+  /** The bridge's history epoch: a restart mints a fresh one even when the
+   * revision happens to move forward. */
+  lastEpoch: string | null;
   lastTurnId: string | null;
   lastMessages: Map<string, UiMessage>;
   /** Open interaction id → which card kind the renderer is showing for it. */
@@ -249,7 +252,7 @@ export function createPerchEventBridge(options: PerchEventBridgeOptions): PerchE
   const stateFor = (hostSessionId: string): SessionState => {
     let state = sessions.get(hostSessionId);
     if (!state) {
-      state = { busy: false, lastRevision: -1, lastTurnId: null, lastMessages: new Map(), liveInteractions: new Map() };
+      state = { busy: false, lastRevision: -1, lastEpoch: null, lastTurnId: null, lastMessages: new Map(), liveInteractions: new Map() };
       sessions.set(hostSessionId, state);
     }
     return state;
@@ -275,8 +278,9 @@ export function createPerchEventBridge(options: PerchEventBridgeOptions): PerchE
       // the diff baseline resets and every row is force-updated — the renderer
       // ignores message_start for an id it already has, so a recovered row is
       // pushed with message_update.
+      const epoch = (snapshot as { history?: { epoch?: string } }).history?.epoch;
       let restarted = false;
-      if (revision < state.lastRevision) {
+      if (revision < state.lastRevision || (epoch !== undefined && state.lastEpoch !== null && epoch !== state.lastEpoch)) {
         restarted = true;
         if (state.busy) {
           emitAgent(remoteSessionId, {
@@ -292,6 +296,7 @@ export function createPerchEventBridge(options: PerchEventBridgeOptions): PerchE
         state.busy = false;
       }
       state.lastRevision = revision;
+      if (epoch !== undefined) state.lastEpoch = epoch;
       const turnId = snapshot.turnId ?? null;
       state.lastTurnId = turnId ?? state.lastTurnId;
 
