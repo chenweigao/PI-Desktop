@@ -38,7 +38,7 @@ import { api } from "../../lib/api";
 import { dropAskDraft } from "../../lib/pending-asks";
 import { isRemoteSession, safeSessionSummary, sessionAllows } from "../../lib/remote-session-safety";
 import { createRefreshCoordinator } from "../../lib/refresh-coordinator";
-import { openRemoteProjectSession, remoteProjectForSession } from "../../lib/remote-project-session";
+import { openDirectRemoteSession, openRemoteProjectSession, remoteProjectForSession } from "../../lib/remote-project-session";
 import {
   applyOptimisticSessionConfiguration,
 } from "../../lib/session-thinking";
@@ -164,6 +164,7 @@ export function createSessionSlice({
   | "prefetchSession"
   | "selectSession"
   | "newSession"
+  | "createRemoteSession"
   | "forkSession"
   | "forkAssistantMessage"
   | "configureActiveSession"
@@ -732,6 +733,16 @@ export function createSessionSlice({
           runtime.pendingNewSessionRequests.delete(scopeKey);
         }
       }
+    },
+
+    createRemoteSession: async (options) => {
+      await openDirectRemoteSession({ get, set, runtime }, {
+        hostKey: options.hostKey,
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+      }, {
+        ...(options.remoteProvider ? { provider: options.remoteProvider } : {}),
+        ...(options.remoteModel ? { model: options.remoteModel } : {}),
+      });
     },
 
     forkSession: async (id) => {

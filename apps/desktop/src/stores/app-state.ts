@@ -238,6 +238,19 @@ export type AppState = {
     /** Create an isolated session in its own git worktree (ADR 0329). */
     isolated?: boolean;
   }) => Promise<void>;
+  /**
+   * Perch/Kimi only: start a remote session on a host without registering a
+   * project first. `cwd` is a remote absolute path; absent means the remote
+   * home directory, resolved on the host at creation time.
+   */
+  createRemoteSession: (options: {
+    hostKey: string;
+    cwd?: string;
+    /** Perch: the runtime (agent) to host the new session. */
+    remoteProvider?: string;
+    /** Perch: the model to run; must exist in the host's catalog. */
+    remoteModel?: string;
+  }) => Promise<void>;
   forkSession: (id: string) => Promise<void>;
   forkAssistantMessage: (messageId: string) => Promise<void>;
   configureActiveSession: (config: {

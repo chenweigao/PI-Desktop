@@ -76,3 +76,23 @@ export async function openRemoteProjectSession(
     if (runtime.pendingNewSessionRequests.get(scope) === request) runtime.pendingNewSessionRequests.delete(scope);
   }
 }
+
+/**
+ * Direct remote session: the caller names a host, not a project. The cwd
+ * defaults to the remote home directory — a browse with no path resolves it
+ * on the host — so no project registration ever happens. The resolved cwd
+ * feeds the same project-session machinery, which dedupes concurrent creates
+ * and reuses an existing empty session at that cwd instead of piling up rows.
+ */
+export async function openDirectRemoteSession(
+  access: StoreAccess & { runtime: SessionRuntime },
+  target: { hostKey: string; cwd?: string },
+  options?: { provider?: string; model?: string },
+): Promise<void> {
+  const cwd = target.cwd?.trim()
+    ? target.cwd.trim()
+    : (await api.remoteHostBrowseProjects(target.hostKey)).path;
+  const label = cwd.replace(/\/+$/, "").split("/").pop() || cwd;
+  await openRemoteProjectSession(access,
+    { hostKey: target.hostKey, projectId: cwd, label }, options);
+}

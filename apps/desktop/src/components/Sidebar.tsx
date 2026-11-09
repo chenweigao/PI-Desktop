@@ -1,5 +1,6 @@
 import { IconClock } from "./icons";
 import { RemoteProjectGroups } from "./remote/RemoteProjectGroups";
+import { RemoteSessionLauncher } from "./remote/RemoteSessionLauncher";
 import {
   buildSidebarRemoteGroups,
   dedupeSessionsById,
@@ -120,6 +121,7 @@ import {
   IconChevronDown,
   IconCopy,
   IconCircleAlert,
+  IconGlobe,
   IconList,
   IconListTree,
   IconNewSession,
@@ -294,6 +296,10 @@ export function Sidebar({
   const prefetchSession = useAppStore((s) => s.prefetchSession);
   const selectSession = useAppStore((s) => s.selectSession);
   const newSession = useAppStore((s) => s.newSession);
+  // Direct new-remote-session entry: no project object required. The host
+  // picks a sensible default cwd (the remote home); the project layer stays
+  // optional organization.
+  const createRemoteSession = useAppStore((s) => s.createRemoteSession);
   const forkSessionAction = useAppStore((s) => s.forkSession);
   const openProject = useAppStore((s) => s.openProject);
   const refreshProject = useAppStore((s) => s.refreshProject);
@@ -322,6 +328,7 @@ export function Sidebar({
   const update = useUpdateState();
 
   const [sortOpen, setSortOpen] = useState(false);
+  const [remoteLaunchOpen, setRemoteLaunchOpen] = useState(false);
   const [sessionMenu, setSessionMenu] = useState<string | null>(null);
   const [renameFor, setRenameFor] = useState<SessionSummary | null>(null);
   const [editProjectFor, setEditProjectFor] = useState<ProjectEntry | null>(null);
@@ -1064,9 +1071,6 @@ export function Sidebar({
     compareSessions,
     projectEntries.map((entry) => entry.name.toLocaleLowerCase()),
   ), [filtered, pinnedSessionIds, compareSessions, projectEntries]);
-  // Direct new-remote-session entry: no project object required. The host
-  // picks a sensible default cwd (the remote home); the project layer stays
-  // optional organization.
   // Flat layout: every listable session in one sorted list, pins excluded
   // (they already have their own section, exactly like the grouped layout).
   const flatSessions = useMemo(
@@ -1604,6 +1608,22 @@ export function Sidebar({
       focusComposer();
     } catch (error) {
       reportError(error);
+    }
+  };
+
+  // Direct remote creation reports through the same toast path as local
+  // creation and rethrows so the launcher keeps the panel open for a retry.
+  const createDirectRemoteSession = async (options: {
+    hostKey: string;
+    cwd?: string;
+    remoteProvider?: string;
+  }) => {
+    try {
+      await createRemoteSession(options);
+      focusComposer();
+    } catch (error) {
+      reportError(error);
+      throw error;
     }
   };
 
@@ -2275,6 +2295,14 @@ export function Sidebar({
               {session.remoteHostLabel ?? t("remote:remote")}
             </span>
           )}
+          {isRemoteSession(session) && session.remoteAgent ? (
+            <span
+              className="thread-item-source thread-item-agent"
+              title={`${session.remoteAgent} · ${session.remoteHostLabel ?? t("remote:remote")}`}
+            >
+              {session.remoteAgent}
+            </span>
+          ) : null}
           <WorktreeBadge worktree={session.worktree} sessionId={session.id} />
           <span className="thread-item-title">{taskTitle(session.title)}</span>
           {options?.global ? (
@@ -2738,8 +2766,25 @@ export function Sidebar({
               >
                 <IconNewSession size={14} />
               </TooltipButton>
+              <TooltipButton
+                type="button"
+                className={`sidebar-toolbar-button ${remoteLaunchOpen ? "active" : ""}`}
+                data-action="new-remote-session"
+                tooltip={t("remote:newRemoteSession")}
+                ariaLabel={t("remote:newRemoteSession")}
+                aria-expanded={remoteLaunchOpen}
+                onClick={() => setRemoteLaunchOpen((open) => !open)}
+              >
+                <IconGlobe size={14} />
+              </TooltipButton>
             </div>
           </div>
+          {remoteLaunchOpen ? (
+            <RemoteSessionLauncher
+              onCreate={createDirectRemoteSession}
+              onClose={() => setRemoteLaunchOpen(false)}
+            />
+          ) : null}
           {sessionViewMode === "projects" ? (
           <div
             className="sidebar-session-group-body standalone"
