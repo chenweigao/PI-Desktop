@@ -284,6 +284,7 @@ export function Sidebar({
   const runningSessions = useAppStore((s) => s.runningSessions);
   const sessionOutcomes = useAppStore((s) => s.sessionOutcomes);
   const pendingPermissions = useAppStore((s) => s.pendingPermissions);
+  const pendingAsks = useAppStore((s) => s.pendingAsks);
   const setPage = useAppStore((s) => s.setPage);
   const navBack = useAppStore((s) => s.navBack);
   const canNavBack = useAppStore((s) => s.canNavBack);
@@ -2199,7 +2200,8 @@ export function Sidebar({
     const active = page === "chat" && selectedSessionId === session.id;
     const archived = sessionArchived(session, meta);
     const running = Boolean(runningSessions[session.id]);
-    const hasPendingPermission = (pendingPermissions[session.id]?.length ?? 0) > 0;
+    const hasPendingPermission = (pendingPermissions[session.id]?.length ?? 0) > 0
+      || (pendingAsks[session.id]?.length ?? 0) > 0;
     const status = sidebarSessionStatus({
       running,
       selected: active,
@@ -2366,6 +2368,7 @@ export function Sidebar({
       entry.sessions,
       runningSessions,
       pendingPermissions,
+      pendingAsks,
     );
     const runIsLive = projectRunSummaryIsLive(runSummary);
     const showRunBadge = runningAffordances.badge && runIsLive;

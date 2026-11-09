@@ -65,6 +65,7 @@ export function RemoteProjectGroups({ groups, renderSessions }: {
   const runAffordances = resolveSidebarRunningAffordances(settings);
   const runningSessions = useAppStore((state) => state.runningSessions);
   const pendingPermissions = useAppStore((state) => state.pendingPermissions);
+  const pendingAsks = useAppStore((state) => state.pendingAsks);
   const projectCollapsed = useAppStore((state) => state.projectCollapsed);
   const setProjectCollapsed = useAppStore((state) => state.setProjectCollapsed);
   const remoteModelCatalogs = useAppStore((state) => state.remoteModelCatalogs);
@@ -134,7 +135,7 @@ export function RemoteProjectGroups({ groups, renderSessions }: {
   return <>{groups.map(({ project, sessions }) => {
     const collapsed = projectCollapsed[remoteGroupCollapseKey(project.key)] === true;
     const groupId = remoteGroupDomId(project.key);
-    const runSummary = summarizeProjectRuns(sessions, runningSessions, pendingPermissions);
+    const runSummary = summarizeProjectRuns(sessions, runningSessions, pendingPermissions, pendingAsks);
     const runIsLive = projectRunSummaryIsLive(runSummary);
     const showRunBadge = runAffordances.badge && runIsLive;
     const showRunRail = runAffordances.rail && runIsLive;

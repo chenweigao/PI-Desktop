@@ -142,7 +142,7 @@ test("remote project groups carry the same affordances", async () => {
     new URL("../src/components/remote/RemoteProjectGroups.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(remote, /summarizeProjectRuns\(sessions, runningSessions, pendingPermissions\)/);
+  assert.match(remote, /summarizeProjectRuns\(sessions, runningSessions, pendingPermissions, pendingAsks\)/);
   assert.match(remote, /showRunRail \? <ProjectRunRail summary=\{runSummary\} \/>/);
   assert.match(remote, /showRunBadge \? <ProjectRunBadge summary=\{runSummary\} \/>/);
   assert.match(remote, /showRunCount \? <ProjectRunCount summary=\{runSummary\} \/>/);
@@ -164,4 +164,17 @@ test("both affordance colours resolve through theme tokens", async () => {
   assert.match(block, /--ds-purple/);
   // Motion is decoration only: it must be dropped under reduced motion.
   assert.match(block, /@media \(prefers-reduced-motion: reduce\)/);
+});
+
+test("an unanswered question marks the session waiting, exactly like an approval", () => {
+  const summary = summarizeProjectRuns(
+    [{ id: "s1" }, { id: "s2" }, { id: "s3" }],
+    { s3: true },
+    {},
+    { s1: [{}] },
+  );
+  assert.deepEqual(summary, { running: 1, waiting: 1, total: 3 });
+  // Approvals and questions never double-count one session.
+  const both = summarizeProjectRuns([{ id: "s1" }], {}, { s1: [{}] }, { s1: [{}] });
+  assert.equal(both.waiting, 1);
 });

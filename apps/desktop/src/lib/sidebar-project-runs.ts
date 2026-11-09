@@ -74,11 +74,15 @@ export function summarizeProjectRuns(
   sessions: readonly ProjectRunSession[],
   runningSessions: Record<string, boolean | undefined>,
   pendingPermissions: Record<string, readonly unknown[] | undefined>,
+  /** Open user questions count as waiting too — an unanswered question blocks
+   * the session exactly like an approval does. */
+  pendingAsks: Record<string, readonly unknown[] | undefined> = {},
 ): ProjectRunSummary {
   let running = 0;
   let waiting = 0;
   for (const session of sessions) {
-    if ((pendingPermissions[session.id]?.length ?? 0) > 0) {
+    if ((pendingPermissions[session.id]?.length ?? 0) > 0
+      || (pendingAsks[session.id]?.length ?? 0) > 0) {
       waiting += 1;
     } else if (runningSessions[session.id]) {
       running += 1;
