@@ -1064,6 +1064,9 @@ export function Sidebar({
     compareSessions,
     projectEntries.map((entry) => entry.name.toLocaleLowerCase()),
   ), [filtered, pinnedSessionIds, compareSessions, projectEntries]);
+  // Direct new-remote-session entry: no project object required. The host
+  // picks a sensible default cwd (the remote home); the project layer stays
+  // optional organization.
   // Flat layout: every listable session in one sorted list, pins excluded
   // (they already have their own section, exactly like the grouped layout).
   const flatSessions = useMemo(

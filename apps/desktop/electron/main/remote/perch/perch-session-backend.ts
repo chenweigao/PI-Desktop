@@ -28,6 +28,8 @@ type PerchHistoryCursor = { hostSessionId: string; before: number; epoch: string
 export type PerchBackendOptions = {
   hostKey: string;
   client: PerchClient;
+  /** Session-scoped allow: tools remembered as allowed for this session. */
+  sessionAllowedTools?: Map<string, Set<string>>;
   /** Model catalog lookup so a model switch names its provider correctly. */
   listModels?: () => Promise<Array<{ id: string; provider: string; agent: string }>>;
   newRequestId?: () => string;
@@ -113,6 +115,8 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
       throw error;
     }
   };
+
+  const sessionAllowedTools = options.sessionAllowedTools ?? new Map<string, Set<string>>();
 
   const invoke = async (channel: string, args: readonly unknown[]): Promise<unknown> => {
     switch (channel) {
@@ -273,6 +277,17 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
         if (!target) {
           // Stale / already-resolved id: fail closed rather than guess.
           throw Object.assign(new Error("approval is no longer open"), { errorCode: "NOT_FOUND" });
+        }
+        // A session-scoped allow remembers the tool: later requests for the
+        // same tool on this session auto-approve, so the user is not asked
+        // again (Qoder/OMP have no native per-session grant; the adapter owns it).
+        if (resolution.decision === "allow-session") {
+          const toolName = (target as { title?: string }).title?.match(/^Allow tool:\s*([^\n]+)/)?.[1]?.trim();
+          if (toolName) {
+            const allowed = sessionAllowedTools.get(hostSessionId) ?? new Set<string>();
+            allowed.add(toolName);
+            sessionAllowedTools.set(hostSessionId, allowed);
+          }
         }
         const body: Record<string, unknown> = { id: parsed.hostApprovalId };
         if (target.method === "confirm") {

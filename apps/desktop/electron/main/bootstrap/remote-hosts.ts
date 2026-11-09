@@ -61,8 +61,8 @@ export interface RemoteHostsBoot {
   bootstrapHost(request: RemoteHostBootstrapRequest): Promise<RemoteHostBootstrapResult>;
   reconnectHost(hostKey: string): Promise<RemoteHostSummary>;
   ensureReady(hostKey: string): Promise<RemoteHostSummary>;
-  /** Update a paired host's label/SSH fields, then reconnect. */
-  updateHost(hostKey: string, patch: Partial<Pick<RemoteHostRecord, "label" | "sshSecret">> & { ssh?: Partial<import("@pi-desktop/shared").RemoteHostSshMetadata> }): Promise<RemoteHostSummary>;
+  /** Update a paired host's label/SSH fields, then reconnect. Empty strings clear a stored value; absent fields leave it alone. */
+  updateHost(hostKey: string, patch: Partial<Pick<RemoteHostRecord, "label">> & { sshSecret?: string | null } & { ssh?: Record<string, unknown> }): Promise<RemoteHostSummary>;
   /** One live connect + first poll; returns the real failure reason, never a fake online. */
   checkHost(hostKey: string): Promise<{ ok: boolean; error?: string }>;
   removeHost(hostKey: string): Promise<void>;
@@ -804,14 +804,22 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
     updateHost: (key, patch) => serial(key, async () => {
       const record = (await registry.list()).find((item) => item.hostKey === key);
       if (!record) throw unavailable();
+      const currentSsh = (record.metadata?.ssh ?? {}) as Record<string, unknown>;
+      const patchSsh = patch.ssh ?? {};
+      // Empty-string fields clear the stored value; absent fields keep it.
+      const mergedSsh: Record<string, unknown> = { ...currentSsh };
+      for (const [field, value] of Object.entries(patchSsh)) {
+        if (value === null || value === "") delete mergedSsh[field];
+        else mergedSsh[field] = value;
+      }
       const next: RemoteHostRecord = {
         ...record,
         ...(patch.label ? { label: patch.label } : {}),
-        ...(patch.sshSecret !== undefined ? { sshSecret: patch.sshSecret } : {}),
-        ...(patch.ssh || record.metadata?.ssh
-          ? { metadata: { ...record.metadata, ssh: { ...(record.metadata?.ssh as object ?? {}), ...patch.ssh } } }
-          : {}),
+        // An empty string clears the stored password; absent leaves it.
+        ...(patch.sshSecret === null ? {} : patch.sshSecret !== undefined ? { sshSecret: patch.sshSecret } : {}),
+        ...(patch.ssh !== undefined ? { metadata: { ...record.metadata, ssh: mergedSsh } } : {}),
       };
+      if (patch.sshSecret === null) delete next.sshSecret;
       await registry.upsert(next);
       // A label-only rename never drops the live connection; connection-affecting
       // fields (SSH target/credentials) close and reopen.

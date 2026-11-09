@@ -109,6 +109,9 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
   let connected = false;
   let failures = 0;
   let sessionCache: PerchSessionSummary[] = [];
+  // Session-scoped allow: allow-session remembers the tool; the bridge
+  // auto-approves later identical-tool requests on the same session.
+  const sessionAllowedTools = new Map<string, Set<string>>();
   let lastInventoryKey = "";
   const lastSeenRevision = new Map<string, number>();
   let rediscovering: Promise<void> | null = null;
@@ -216,6 +219,21 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
         const snapshot = (await client.get(`/sessions/${encodeURIComponent(hostSessionId)}`)) as PerchSessionSummary & { revision?: number };
         if (snapshot.busy || (snapshot.pending ?? 0) > 0) anyBusy = true;
         lastSeenRevision.set(hostSessionId, snapshot.revision ?? session.revision);
+        // Auto-approve tools this session already allowed: answer them before
+        // the bridge surfaces a card, so an allowed tool never re-asks.
+        const allowed = sessionAllowedTools.get(hostSessionId);
+        if (allowed?.size && client) {
+          for (const interaction of (snapshot as { interactions?: Array<{ id: string; method?: string; title?: string; options?: string[] }> }).interactions ?? []) {
+            const toolName = interaction.title?.match(/^Allow tool:\s*([^\n]+)/)?.[1]?.trim();
+            if (!toolName || !allowed.has(toolName)) continue;
+            const option = interaction.options?.find((o) => /^approve$/i.test(o)) ?? interaction.options?.[0];
+            if (interaction.method === "select" && option) {
+              await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/answer`, { id: interaction.id, value: option }).catch(() => undefined);
+            } else if (interaction.method === "confirm") {
+              await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/answer`, { id: interaction.id, allow: true }).catch(() => undefined);
+            }
+          }
+        }
         bridge.applySnapshot(hostSessionId, snapshot as never);
       }
     } catch (error) {
