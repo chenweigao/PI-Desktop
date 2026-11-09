@@ -61,3 +61,12 @@ electron.vite.config.*.mjs
 
 .playwright-cli
 worktrees
+# Test-run scratch dirs (Electron user-path fixtures create dot dirs in apps/desktop)
+apps/desktop/.*-ui-*/
+apps/desktop/.isolated-launch-test-*/
+apps/desktop/.jev-*/
+apps/desktop/.fast-mode-launch-test-*/
+apps/desktop/.custom-provider-*/
+apps/desktop/.remote-project-ui-*/
+apps/desktop/.worktree-menu-ui-*/
+apps/desktop/.fallback-ui-*/

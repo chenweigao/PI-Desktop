@@ -50,8 +50,9 @@ export function ComposerPermissionPicker({t, mode, composerPermissionMode,
   const remoteSelectable = !!remote && remote.options.length > 0
     && (remote.scope === "next-message" || remote.scope === "next-turn");
   const disabled = controlsBlocked || mode === "goal" || (remote !== null && !remoteSelectable);
+  // selected can be null (runtime-managed): show the scope, not an empty chip.
   const selectedLabel = remote
-    ? remoteOptionLabel(t, remoteAgent, remote.selected ?? "")
+    ? (remote.selected ? remoteOptionLabel(t, remoteAgent, remote.selected) : t(SCOPE_I18N_KEYS[remote.scope]))
     : t(PERMISSION_MODE_I18N_KEYS[composerPermissionMode]);
   const scopeSuffix = remote ? ` · ${t(SCOPE_I18N_KEYS[remote.scope])}` : "";
   const baseTooltip = mode === "goal"

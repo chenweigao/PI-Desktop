@@ -620,6 +620,16 @@ test("askToolResolve answers OMP input/select questions and AskUserQuestion; emp
   const auq = bridge.answers.at(-1);
   assert.equal(auq.allow, true);
   assert.deepEqual(auq.answers, { "Framework?": "Vue", "CSS?": "Tailwind" });
+  // a partially answered structured question fails honestly (Codex is all-or-nothing)
+  bridge.interactions.push({ id: "q-partial", name: "AskUserQuestion", input: { questions: [
+    { question: "A?", options: [{ label: "1" }] },
+    { question: "B?", options: [{ label: "2" }] },
+  ] } });
+  await assert.rejects(
+    backend.invoke(IPC.invoke.askToolResolve, [{ requestId: makeRemoteApprovalRequestId(sessionId, "q-partial"), answers: [["1"], null] }]),
+    /requires every question answered/,
+  );
+  assert.ok(!bridge.answers.some((a) => a.id === "q-partial"), "a partial answer reached the bridge");
   // an approval id is not a question; a stale id fails closed
   bridge.interactions.push({ id: "ap-1", method: "confirm", title: "Run ls?" });
   await assert.rejects(

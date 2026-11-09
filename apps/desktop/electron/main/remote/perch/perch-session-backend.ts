@@ -407,7 +407,7 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
         const body: Record<string, unknown> = { id: parsed.hostApprovalId };
         const answers = resolution.answers ?? [];
         if (target.name === "AskUserQuestion") {
-          // Claude/Qoder structured questions: the bridge forwards
+          // Claude/Qoder/Codex structured questions: the bridge forwards
           // {allow, answers: {question: label}} to the runtime as-is.
           const questions = (((target.input ?? {}) as { questions?: Array<{ question?: string }> }).questions ?? []);
           const answered: Record<string, string> = {};
@@ -416,6 +416,12 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
             if (picked && picked.length && question.question) answered[question.question] = picked.join("\u3001");
           });
           if (!Object.keys(answered).length) body.cancelled = true;
+          else if (Object.keys(answered).length < questions.length) {
+            // Codex rejects a partial answer map outright ("请回答所有问
+            // 题"); fail here with an honest reason instead of letting the
+            // bridge's error surface as an opaque failure.
+            throw invalid("this runtime requires every question answered; answer the rest or dismiss the card");
+          }
           else { body.allow = true; body.answers = answered; }
         } else if (target.method === "select") {
           const picked = answers[0]?.[0];

@@ -86,6 +86,16 @@ window.permissionProbe = async () => {
   flushSync(() => chip().click());
   await until(() => menuOptions().length === 3, "kimi options missing");
   check(menuOptions().some((node) => node.textContent.includes(i18n.t("chat.remotePermissionOption.kimi.yolo"))), "kimi-specific label missing");
+  // runtime-managed (dsh): no empty chip — it names the mode, and the scope
+  // is spelled out in the tooltip.
+  mount({ selected: "runtime-managed", options: [], scope: "runtime-managed" }, "dsh");
+  await until(() => chip(), "dsh chip missing");
+  check(chip().disabled, "runtime-managed picker must be read-only");
+  const dshLabel = chip().textContent.trim();
+  check(dshLabel.length > 0, "empty chip for a runtime-managed session");
+  const chipWrap = chip().closest("[data-tooltip], [aria-label]") ?? chip();
+  check((chipWrap.getAttribute("aria-label") ?? "").includes(i18n.t("chat.remotePermissionScopeRuntimeManaged")),
+    "runtime-managed scope not named in the tooltip: " + chipWrap.getAttribute("aria-label"));
   view.unmount();
   return { passed: true };
 };
