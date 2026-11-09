@@ -20,6 +20,7 @@ import { createSshBootstrap, type SshBootstrapDeps } from "../remote/ssh-bootstr
 import { createSshTunnelManager, type SshTunnelManager } from "../remote/ssh-tunnel.js";
 import { createRemoteHostConnection, type RemoteHostConnection } from "../remote/remote-host-connection.js";
 import { createRemoteHostRegistry, type EncryptionPort, type RemoteHostRecord, type RemoteHostRegistry } from "../remote/remote-host-registry.js";
+import type { RemotePermissionScope } from "@pi-desktop/shared";
 import { sshMetadataOf, sshHostRecord, transportOf } from "../remote/remote-host-metadata.js";
 import { createRemoteSessionCatalog } from "../remote/remote-session-catalog.js";
 import { syncRemoteProviders } from "../remote/remote-provider-transfer.js";
@@ -58,6 +59,11 @@ export interface RemoteHostsBoot {
   closeAll(): Promise<void>;
   list(): Promise<RemoteHostSummary[]>;
   addHost(record: RemoteHostRecord): Promise<RemoteHostSummary>;
+  /** After a Perch host lands, detect a Kimi service reachable over the same
+   * saved SSH connection and register it — the user configures the machine
+   * once, runtimes are discovered under it. Read-only probe; failures and a
+   * missing service both yield null, never an add failure. */
+  probeKimiSibling(hostKey: string): Promise<RemoteHostSummary | null>;
   bootstrapHost(request: RemoteHostBootstrapRequest): Promise<RemoteHostBootstrapResult>;
   reconnectHost(hostKey: string): Promise<RemoteHostSummary>;
   ensureReady(hostKey: string): Promise<RemoteHostSummary>;
@@ -71,6 +77,8 @@ export interface RemoteHostsBoot {
   projects(hostKey: string): Promise<RacpProjectSummary[]>;
   /** Perch: the bridge's combined model catalog; RACP hosts have none. */
   models(hostKey: string): Promise<Array<{ id: string; provider: string; name: string; agent: string }>>;
+  /** Live per-runtime readiness on a Perch host (bridge GET /setup?provider=). */
+  runtimeStatus(hostKey: string): Promise<import("@pi-desktop/shared").RemoteRuntimeStatus[]>;
   browseProjects(hostKey: string, path?: string): Promise<RemoteHostBrowseProjectsResult>;
   registerProject(hostKey: string, path: string): Promise<RacpProjectSummary & { path?: string }>;
   createSession(request: RemoteHostCreateSessionRequest): Promise<SessionSummary>;
@@ -616,6 +624,43 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       // the synced provider catalog, so there is no separate live list.
       return [];
     },
+    async runtimeStatus(hostKey) {
+      const record = (await registry.list()).find((item) => item.hostKey === hostKey);
+      if (!record || !isPerchRecord(record)) return [];
+      await ensureReady(hostKey);
+      const entry = openedPerch.get(hostKey);
+      if (!entry) throw unavailable();
+      const { PERCH_PROVIDERS } = await import("../remote/perch/perch-host.js");
+      // Probe every runtime the bridge can serve; each runs CLI discovery, so
+      // run them concurrently and keep a per-runtime failure as an error row
+      // rather than failing the whole probe.
+      return Promise.all([...PERCH_PROVIDERS].map(async (provider) => {
+        try {
+          const status = await entry.host.setupStatus(provider);
+          return {
+            provider,
+            installed: status.installed === true,
+            ...(typeof status.version === "string" ? { version: status.version } : {}),
+            models: Array.isArray(status.models)
+              ? (status.models as Array<Record<string, unknown>>)
+                  .filter((m) => typeof m?.id === "string")
+                  .map((m) => ({ id: m.id as string, name: typeof m.name === "string" ? m.name : (m.id as string), provider: typeof m.provider === "string" ? m.provider : "" }))
+              : [],
+            modelCheck: typeof status.modelCheck === "string" ? status.modelCheck : "unverified",
+            credentialCheck: typeof status.credentialCheck === "string" ? status.credentialCheck : "unverified",
+            ...(typeof status.sdkInstalled === "boolean" ? { sdkInstalled: status.sdkInstalled } : {}),
+            ...(typeof status.nodeInstalled === "boolean" ? { nodeInstalled: status.nodeInstalled } : {}),
+            ...(typeof status.error === "string" ? { error: status.error } : {}),
+          };
+        } catch (error) {
+          return {
+            provider, installed: false, models: [],
+            modelCheck: "unverified", credentialCheck: "unverified",
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }));
+    },
     async browseProjects(hostKey, path) {
       await ensureReady(hostKey);
       const record = (await registry.list()).find((item) => item.hostKey === hostKey);
@@ -738,6 +783,12 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
           remoteAgent: created.provider,
           mode: "agent" as SessionSummary["mode"],
           permissionMode: (created.permissionMode ?? "ask") as SessionSummary["permissionMode"],
+          ...(created.permission ? { remotePermission: {
+            selected: created.permission.selected ?? null,
+            options: created.permission.options ?? [],
+            scope: (["next-message", "next-turn", "new-session", "runtime-managed"].includes(created.permission.scope ?? "")
+              ? created.permission.scope : "new-session") as RemotePermissionScope,
+          } } : {}),
           thinkingLevel: "off" as SessionSummary["thinkingLevel"],
           ...(created.model ? { modelId: created.model } : {}),
           ...(created.provider_id ? { providerId: created.provider_id } : {}),
@@ -757,6 +808,7 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
           cwd: input.projectId,
           ...(input.title ? { title: input.title } : {}),
           ...(input.model ? { model: input.model } : {}),
+          ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
         });
         changed();
         return {
@@ -768,6 +820,11 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
           remoteAgent: "kimi",
           mode: "agent" as SessionSummary["mode"],
           permissionMode: "ask" as SessionSummary["permissionMode"],
+          remotePermission: {
+            selected: input.permissionMode ?? created.agent_config?.permission_mode ?? "manual",
+            options: ["manual", "yolo", "auto"],
+            scope: "next-message" as RemotePermissionScope,
+          },
           thinkingLevel: "off" as SessionSummary["thinkingLevel"],
           ...(created.agent_config?.model ? { modelId: created.agent_config.model } : {}),
           messageCount: 0,
@@ -791,6 +848,41 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       });
     },
     addHost: (record) => serial(record.hostKey, () => addRecord(record)),
+    probeKimiSibling: async (hostKey) => {
+      const records = await registry.list();
+      const record = records.find((item) => item.hostKey === hostKey);
+      if (!record || !isPerchRecord(record)) return null;
+      const ssh = sshMetadataOf(record);
+      if (!ssh) return null;
+      const siblingKey = `${hostKey}-kimi`;
+      if (records.some((item) => item.hostKey === siblingKey)) return null;
+      const transport = createSystemSshTransport({
+        host: ssh.host,
+        ...(ssh.port !== undefined ? { port: ssh.port } : {}),
+        ...(ssh.user ? { user: ssh.user } : {}),
+        ...(ssh.identityFile ? { identityFile: ssh.identityFile } : {}),
+        ...(record.sshSecret ? { password: record.sshSecret } : {}),
+      });
+      try {
+        // Read-only availability probe: the Perch service script can serve
+        // Kimi on demand; an existing token means it is already running.
+        const probe = await transport.exec(
+          'if [ -f "$HOME/.local/share/agent-workbench/native/local-agent-service.py" ] || [ -f "$HOME/.kimi-code/server.token" ]; then echo kimi-available; fi',
+          { timeoutMs: 15_000 },
+        );
+        if (!probe.stdout.includes("kimi-available")) return null;
+      } catch (error) {
+        log("info", "kimi sibling probe failed; skipping", { hostKey, error: String(error) });
+        return null;
+      }
+      return addRecord({
+        ...record,
+        hostKey: siblingKey,
+        label: `${record.label} · Kimi`,
+        url: `kimi+ssh://${ssh.host}`,
+        metadata: { ...record.metadata, backend: "kimi" },
+      });
+    },
     reconnectHost: (key) => serial(key, async () => {
       const record = (await registry.list()).find((item) => item.hostKey === key);
       if (!record) throw unavailable();
@@ -811,6 +903,11 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       for (const [field, value] of Object.entries(patchSsh)) {
         if (value === null || value === "") delete mergedSsh[field];
         else mergedSsh[field] = value;
+      }
+      // The SSH target itself is the one field a patch may never remove: an
+      // SSH-transport record without a host can never connect again.
+      if (patch.ssh !== undefined && sshMetadataOf(record) && !(typeof mergedSsh.host === "string" && mergedSsh.host)) {
+        throw Object.assign(new Error("ssh host is required"), { errorCode: "INVALID_ARGUMENT", field: "ssh.host" });
       }
       const next: RemoteHostRecord = {
         ...record,

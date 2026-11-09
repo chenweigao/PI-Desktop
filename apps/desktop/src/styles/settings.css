@@ -4375,3 +4375,23 @@
 .sklm-page-jump::placeholder {
   color: var(--ds-text-muted);
 }
+
+.settings-remote-host-runtimes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-remote-host-runtime {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-remote-host-runtime-name {
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+}

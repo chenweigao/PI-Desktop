@@ -742,6 +742,7 @@ export function createSessionSlice({
       }, {
         ...(options.remoteProvider ? { provider: options.remoteProvider } : {}),
         ...(options.remoteModel ? { model: options.remoteModel } : {}),
+        ...(options.remotePermissionMode ? { permissionMode: options.remotePermissionMode } : {}),
       });
     },
 

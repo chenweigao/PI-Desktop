@@ -47,7 +47,7 @@ export interface KimiHost {
   models(): Promise<Array<{ id: string; provider: string; name: string; agent: string }>>;
   /** List remote directories over SSH (the Kimi service has no browse endpoint). */
   browse(path?: string): Promise<{ path: string; parent?: string; entries: { name: string; path: string }[] }>;
-  createSession(input: { cwd: string; model?: string; title?: string }): Promise<KimiSession>;
+  createSession(input: { cwd: string; model?: string; permissionMode?: string; title?: string }): Promise<KimiSession>;
 }
 
 const basename = (path: string) => path.replace(/\/+$/, "").split("/").pop() ?? path;
@@ -78,6 +78,8 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
   // Kimi carries the model on the next prompt; shared across every backend
   // registered for this host so a create-time model and a later switch agree.
   const sessionModels = new Map<string, string>();
+  // Per-session permission choice (manual/yolo/auto), sent on each prompt.
+  const sessionPermissions = new Map<string, string>();
   let rediscovering: Promise<void> | null = null;
 
   const assertLive = (): { client: KimiClient } => {
@@ -135,7 +137,7 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
     if (!client) return;
     options.router.registerBackend(
       makeRemoteSessionId(options.hostKey, hostSessionId),
-      createKimiBackend({ hostKey: options.hostKey, client, sessionModels, log }),
+      createKimiBackend({ hostKey: options.hostKey, client, sessionModels, sessionPermissions, log }),
     );
   }
 
@@ -305,11 +307,14 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
         ...(input.title ? { title: input.title } : {}),
       })) as KimiSession;
       registerSessionBackend(created.id);
-      // The model is a per-prompt field on Kimi; a chosen model is recorded on
-      // the session's backend for the next prompt.
-      if (input.model) {
-        const backend = createKimiBackend({ hostKey: options.hostKey, client: live, sessionModels, log });
-        await backend.invoke(IPC.invoke.sessionConfigure, [{ sessionId: makeRemoteSessionId(options.hostKey, created.id) }, { modelId: input.model }]);
+      // The model and permission mode are per-prompt fields on Kimi; chosen
+      // values are recorded on the session's backend for the next prompt.
+      if (input.model || input.permissionMode) {
+        const backend = createKimiBackend({ hostKey: options.hostKey, client: live, sessionModels, sessionPermissions, log });
+        await backend.invoke(IPC.invoke.sessionConfigure, [
+          { sessionId: makeRemoteSessionId(options.hostKey, created.id) },
+          { ...(input.model ? { modelId: input.model } : {}), ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}) },
+        ]);
       }
       sessionCache = [created, ...sessionCache.filter((s) => s.id !== created.id)];
       await pollOnce();

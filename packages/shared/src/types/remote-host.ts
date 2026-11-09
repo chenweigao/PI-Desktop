@@ -170,13 +170,30 @@ export type RemoteHostCreateSessionRequest = {
   projectId: string;
   title?: string;
   mode?: RacpSessionMode;
-  permissionMode?: RacpPermissionMode;
+  /** PI mode for RACP hosts; an agent-native id (OMP "always-ask", Qoder
+   * "acceptEdits", Kimi "yolo", …) for Perch/Kimi hosts — the remote bridge
+   * validates it against its own catalog. */
+  permissionMode?: RacpPermissionMode | string;
   /** Perch: which runtime (omp/codex/claude/qoder/…) hosts the session. */
   provider?: string;
   /** Perch: the model to run; must exist in the bridge catalog. */
   model?: string;
 };
 export type RemoteHostCreateSessionResult = { session: SessionSummary };
+/** One runtime's readiness on a Perch host (bridge `GET /setup?provider=`). */
+export type RemoteRuntimeStatus = {
+  provider: string;
+  installed: boolean;
+  version?: string;
+  models: { id: string; name: string; provider: string }[];
+  /** configured | missing | session-handshake | unverified */
+  modelCheck: string;
+  /** present | missing | provider-managed | unverified */
+  credentialCheck: string;
+  sdkInstalled?: boolean;
+  nodeInstalled?: boolean;
+  error?: string;
+};
 export type RemoteHostReconnectRequest = { hostKey: string };
 export type RemoteHostSyncProvidersRequest = {
   hostKey: string;

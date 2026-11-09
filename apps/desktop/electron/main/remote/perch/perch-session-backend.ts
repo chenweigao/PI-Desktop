@@ -15,12 +15,12 @@
  * - **Fail closed.** Unsupported operations (plan approval, workspace file
  *   browse) report `CAPABILITY_UNAVAILABLE` rather than pretending.
  */
-import { IPC, ErrorCodes } from "@pi-desktop/shared";
+import { IPC, ErrorCodes, type RemotePermissionCapability, type RemotePermissionScope } from "@pi-desktop/shared";
 import type { RemoteBackend } from "../backend-router.js";
 import { parseRemoteSessionId, parseRemoteApprovalRequestId } from "../backend-router.js";
-import type { PerchClient, PerchReceipt, PerchSessionSummary } from "./perch-client.js";
+import type { PerchClient, PerchInteraction, PerchReceipt, PerchSessionSummary } from "./perch-client.js";
 import { asReceipt, PerchBridgeError } from "./perch-client.js";
-import { perchSnapshotToUiMessages, type PerchMessage } from "./perch-event-bridge.js";
+import { classifyPerchInteraction, perchSnapshotToUiMessages, type PerchMessage } from "./perch-event-bridge.js";
 
 /** PI renderer history paging: virtual cursors mapped to Perch `turns/before/epoch`. */
 type PerchHistoryCursor = { hostSessionId: string; before: number; epoch: string };
@@ -43,6 +43,20 @@ function invalid(message: string): Error {
   return Object.assign(new Error(message), { errorCode: ErrorCodes.INVALID_ARGUMENT });
 }
 
+const PERMISSION_SCOPES: ReadonlySet<string> = new Set(["next-message", "next-turn", "new-session", "runtime-managed"]);
+
+/** The bridge's permission capability, defaulted defensively. */
+function remotePermissionOf(summary: PerchSessionSummary): RemotePermissionCapability | undefined {
+  const capability = summary.permission;
+  if (!capability) return undefined;
+  const scope = (PERMISSION_SCOPES.has(capability.scope ?? "") ? capability.scope : "new-session") as RemotePermissionScope;
+  return {
+    selected: capability.selected ?? null,
+    options: Array.isArray(capability.options) ? capability.options.filter((o): o is string => typeof o === "string") : [],
+    scope,
+  };
+}
+
 const HANDLED_CHANNELS: ReadonlySet<string> = new Set([
   IPC.invoke.agentPrompt,
   IPC.invoke.agentGetStatus,
@@ -52,6 +66,7 @@ const HANDLED_CHANNELS: ReadonlySet<string> = new Set([
   IPC.invoke.sessionConfigure,
   IPC.invoke.sessionDelete,
   IPC.invoke.toolResolvePermission,
+  IPC.invoke.askToolResolve,
 ]);
 
 /** hostSessionId for a renderer call, or throw. */
@@ -208,6 +223,9 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
             messages,
             mode: "agent",
             permissionMode: "ask",
+            // The runtime's real permission capability (selected/options/
+            // scope) — `permissionMode` above is only a PI-mode placeholder.
+            ...(remotePermissionOf(snap) ? { remotePermission: remotePermissionOf(snap) } : {}),
             thinkingLevel: "off",
             // The real remote model, so the composer shows it instead of a
             // generic "模型" placeholder.
@@ -231,13 +249,38 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
       }
       case IPC.invoke.sessionConfigure: {
         const hostSessionId = hostIdFor(args);
-        const config = (args[1] ?? {}) as { modelId?: string; providerId?: string };
-        if (!config.modelId) {
-          throw capabilityUnavailable("perch sessions only support switching the model");
+        const config = (args[1] ?? {}) as { modelId?: string; providerId?: string; permissionMode?: string };
+        if (!config.modelId && !config.permissionMode) {
+          throw capabilityUnavailable("perch sessions support switching the model or the permission mode");
         }
         const summary = await getSummary(hostSessionId);
-        if (summary.busy) {
+        if (config.modelId && summary.busy) {
           throw capabilityUnavailable("stop or finish the current task before switching the model");
+        }
+        if (config.permissionMode !== undefined) {
+          // The bridge is the validating authority; mirror its contract so an
+          // unsupported scope fails with an honest reason instead of a silent
+          // no-op (omp/codex fix the mode at creation, dsh manages it live).
+          const capability = remotePermissionOf(summary);
+          if (!capability || !capability.options.includes(config.permissionMode)) {
+            throw capabilityUnavailable(`permission mode "${config.permissionMode}" is not offered by this runtime`);
+          }
+          if (capability.scope !== "next-turn") {
+            throw capabilityUnavailable(capability.scope === "new-session"
+              ? "this runtime fixes the permission mode at session creation"
+              : "this runtime manages permissions itself");
+          }
+          await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/permission`, { mode: config.permissionMode });
+        }
+        if (!config.modelId) {
+          // Permission-only change: report the refreshed capability.
+          const refreshed = await getSummary(hostSessionId);
+          return { session: {
+            id: (args[0] as { sessionId?: string }).sessionId ?? hostSessionId,
+            ...(refreshed.model ? { modelId: refreshed.model } : {}),
+            ...(refreshed.provider_id ? { providerId: refreshed.provider_id } : {}),
+            ...(remotePermissionOf(refreshed) ? { remotePermission: remotePermissionOf(refreshed) } : {}),
+          } };
         }
         // Always resolve the model's identity from the live catalog — never
         // reuse the session's current provider, or a cross-provider pick would
@@ -261,7 +304,11 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
         await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/model`, { provider, model: config.modelId });
         // Return the updated renderer summary so the composer reflects the switch.
         const updated = await getSummary(hostSessionId);
-        return { session: { id: (args[0] as { sessionId?: string }).sessionId ?? hostSessionId, modelId: updated.model, providerId: updated.provider_id } };
+        return { session: {
+          id: (args[0] as { sessionId?: string }).sessionId ?? hostSessionId,
+          modelId: updated.model, providerId: updated.provider_id,
+          ...(remotePermissionOf(updated) ? { remotePermission: remotePermissionOf(updated) } : {}),
+        } };
       }
       case IPC.invoke.toolResolvePermission: {
         const resolution = args[0] as { requestId: string; decision: string; value?: unknown };
@@ -335,6 +382,52 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
           allowed.add(rememberTool);
           sessionAllowedTools.set(hostSessionId, allowed);
         }
+        return { ok: true };
+      }
+      case IPC.invoke.askToolResolve: {
+        const resolution = args[0] as { requestId: string; answers: Array<string[] | null> };
+        const parsed = parseRemoteApprovalRequestId(resolution.requestId);
+        if (!parsed) throw invalid("malformed remote ask request id");
+        const hostSessionId = parseRemoteSessionId(parsed.remoteSessionId)?.hostSessionId;
+        if (!hostSessionId) throw invalid("malformed remote session id");
+        const snap = await snapshot(hostSessionId);
+        const interactions = (snap.interactions ?? []) as PerchInteraction[];
+        const target = interactions.find((item) => item.id === parsed.hostApprovalId);
+        if (!target) {
+          throw Object.assign(new Error("question is no longer open"), { errorCode: "NOT_FOUND" });
+        }
+        if (classifyPerchInteraction(target) !== "ask") {
+          throw invalid("that interaction is a tool approval, not a question");
+        }
+        const body: Record<string, unknown> = { id: parsed.hostApprovalId };
+        const answers = resolution.answers ?? [];
+        if (target.name === "AskUserQuestion") {
+          // Claude/Qoder structured questions: the bridge forwards
+          // {allow, answers: {question: label}} to the runtime as-is.
+          const questions = (((target.input ?? {}) as { questions?: Array<{ question?: string }> }).questions ?? []);
+          const answered: Record<string, string> = {};
+          questions.forEach((question, index) => {
+            const picked = answers[index];
+            if (picked && picked.length && question.question) answered[question.question] = picked.join("\u3001");
+          });
+          if (!Object.keys(answered).length) body.cancelled = true;
+          else { body.allow = true; body.answers = answered; }
+        } else if (target.method === "select") {
+          const picked = answers[0]?.[0];
+          if (!picked) body.cancelled = true;
+          else {
+            if (!(target.options ?? []).includes(picked)) {
+              throw invalid(`answer "${picked}" is not one of the offered options`);
+            }
+            body.value = picked;
+          }
+        } else {
+          // input/editor: free-form text; empty means the user cancelled.
+          const text = answers[0]?.[0]?.trim();
+          if (!text) body.cancelled = true;
+          else body.value = text;
+        }
+        await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/answer`, body);
         return { ok: true };
       }
       case IPC.invoke.plansResolve:

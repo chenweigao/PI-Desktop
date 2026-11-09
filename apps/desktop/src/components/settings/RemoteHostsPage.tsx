@@ -11,7 +11,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { RemoteHostSshAuth, RemoteHostSummary } from "@pi-desktop/shared";
+import type { RemoteHostSshAuth, RemoteHostSummary, RemoteRuntimeStatus } from "@pi-desktop/shared";
 import { api } from "../../lib/api";
 import { remoteHostErrorKey } from "../../lib/remote-host-errors";
 import { useAppStore } from "../../stores/app-store";
@@ -73,6 +73,8 @@ export function RemoteHostsPage() {
   const [reconnecting, setReconnecting] = useState<string | null>(null);
   const [checking, setChecking] = useState<string | null>(null);
   const [checkResult, setCheckResult] = useState<Record<string, string>>({});
+  const [runtimesChecking, setRuntimesChecking] = useState<string | null>(null);
+  const [runtimes, setRuntimes] = useState<Record<string, RemoteRuntimeStatus[]>>({});
   const [editing, setEditing] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState("");
   const [editUser, setEditUser] = useState("");
@@ -169,24 +171,67 @@ export function RemoteHostsPage() {
     }
   };
 
+  /** Live per-runtime readiness probe (bridge /setup): installed, models,
+   * credentials — the "host → runtime → model" story made visible. */
+  const checkRuntimes = async (host: RemoteHostSummary) => {
+    if (runtimesChecking) return;
+    setRuntimesChecking(host.hostKey);
+    setError(null);
+    try {
+      const result = await api.remoteHostRuntimes(host.hostKey);
+      if (alive.current) setRuntimes((prev) => ({ ...prev, [host.hostKey]: result.runtimes }));
+    } catch (caught) {
+      if (alive.current) setError(t(remoteHostErrorKey(caught)));
+    } finally {
+      if (alive.current) setRuntimesChecking(null);
+    }
+  };
+
   const saveEdit = async (event: React.FormEvent<HTMLFormElement>, host: RemoteHostSummary) => {
     event.preventDefault();
     const label = editLabel.trim();
     if (!label) return;
     try {
-      const patch: { label: string; ssh?: Record<string, unknown> } = { label };
+      // Diff against the stored summary: only fields the user actually changed
+      // are sent. An emptied field is sent as "" so the backend deletes the
+      // stored value; an unchanged field is omitted so a rename never rebuilds
+      // the connection.
+      const patch: { label?: string; ssh?: Record<string, unknown> } = {};
+      if (label !== host.label) patch.label = label;
       // Only SSH-backed hosts carry editable connection fields.
       if (host.ssh) {
         const ssh: Record<string, unknown> = {};
-        const user = editUser.trim();
+        const nextHost = editHost.trim();
+        if (!nextHost) {
+          setError(t("settings.remoteHosts.sshHostRequired"));
+          return;
+        }
         const port = editPort.trim();
-        const identityFile = editIdentityFile.trim();
-        if (user) ssh.user = user;
-        if (port) ssh.port = Number(port);
-        if (identityFile) ssh.identityFile = identityFile;
         const servicePort = editServicePort.trim();
-        if (servicePort) ssh.remotePort = Number(servicePort);
+        for (const candidate of [port, servicePort]) {
+          if (candidate && !/^\d{1,5}$/.test(candidate)) {
+            setError(t("settings.remoteHosts.sshPortInvalid"));
+            return;
+          }
+        }
+        if (nextHost !== host.ssh.host) ssh.host = nextHost;
+        const user = editUser.trim();
+        if (user !== (host.ssh.user ?? "")) ssh.user = user;
+        const currentPort = host.ssh.port !== undefined ? String(host.ssh.port) : "";
+        if (port !== currentPort) ssh.port = port === "" ? "" : Number(port);
+        const identityFile = editIdentityFile.trim();
+        if (identityFile !== (host.ssh.identityFile ?? "")) ssh.identityFile = identityFile;
+        const currentServicePort =
+          host.ssh.remotePort && host.ssh.remotePort > 1 ? String(host.ssh.remotePort) : "";
+        if (host.backend === "kimi" && servicePort !== currentServicePort) {
+          ssh.remotePort = servicePort === "" ? "" : Number(servicePort);
+        }
         if (Object.keys(ssh).length) patch.ssh = ssh;
+      }
+      if (patch.label === undefined && patch.ssh === undefined) {
+        // Nothing changed: close the editor without touching the backend.
+        setEditing(null);
+        return;
       }
       await api.updateRemoteHost(host.hostKey, patch);
       setEditing(null);
@@ -329,6 +374,11 @@ export function RemoteHostsPage() {
           showToast(t("settings.remoteHosts.sshSucceeded", { label: result.host.label }), {
             variant: "info",
           });
+          if (result.alsoAdded) {
+            showToast(t("settings.remoteHosts.kimiSiblingAdded", { label: result.alsoAdded.label }), {
+              variant: "info",
+            });
+          }
         } else {
           const result = await api.bootstrapRemoteHost({
             label,
@@ -466,6 +516,11 @@ export function RemoteHostsPage() {
                 <Button variant="ghost" disabled={checking !== null} onClick={() => void check(host)}>
                   {checking === host.hostKey ? remoteT("loading") : t("settings.remoteHosts.check")}
                 </Button>
+                {host.backend === "perch" && host.connected ? (
+                  <Button variant="ghost" disabled={runtimesChecking !== null} onClick={() => void checkRuntimes(host)}>
+                    {runtimesChecking === host.hostKey ? t("settings.remoteHosts.runtimesChecking") : t("settings.remoteHosts.runtimesCheck")}
+                  </Button>
+                ) : null}
                 <Button variant="ghost" onClick={() => {
                   if (editing === host.hostKey) { setEditing(null); return; }
                   setEditLabel(host.label);
@@ -586,6 +641,30 @@ export function RemoteHostsPage() {
                     </Button>
                   </div>
                 </form>
+              ) : null}
+              {runtimes[host.hostKey] ? (
+                <ul className="settings-remote-host-runtimes" aria-label={t("settings.remoteHosts.runtimesCheck")}>
+                  {runtimes[host.hostKey].map((runtime) => {
+                    const status = !runtime.installed
+                      ? t("settings.remoteHosts.runtimeNotInstalled")
+                      : runtime.error
+                        ? runtime.error
+                        : runtime.sdkInstalled === false || runtime.nodeInstalled === false
+                          ? t("settings.remoteHosts.runtimeSdkMissing")
+                          : runtime.credentialCheck === "missing"
+                            ? t("settings.remoteHosts.runtimeCredentialsMissing")
+                            : runtime.modelCheck === "missing"
+                              ? t("settings.remoteHosts.runtimeModelsMissing")
+                              : t("settings.remoteHosts.runtimeReady", { count: runtime.models.length });
+                    const ready = runtime.installed && !runtime.error && runtime.credentialCheck !== "missing" && runtime.modelCheck !== "missing";
+                    return (
+                      <li key={runtime.provider} className="settings-remote-host-runtime">
+                        <span className="settings-remote-host-runtime-name">{runtime.provider}</span>
+                        <Badge tone={ready ? "success" : runtime.installed ? "warning" : "neutral"}>{status}</Badge>
+                      </li>
+                    );
+                  })}
+                </ul>
               ) : null}
               {checkResult[host.hostKey] ? (
                 <p role="status" className="settings-remote-host-check">{checkResult[host.hostKey]}</p>

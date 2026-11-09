@@ -33,6 +33,33 @@ export type SessionCapabilities = {
   canReadWorkspace?: boolean;
 };
 
+/** When a remote permission change takes effect (Perch bridge contract). */
+export type RemotePermissionScope = "next-message" | "next-turn" | "new-session" | "runtime-managed";
+
+export type RemotePermissionCapability = {
+  /** The currently selected agent-native mode id; null when the runtime manages it. */
+  selected: string | null;
+  /** Agent-native option ids the runtime accepts (empty when runtime-managed). */
+  options: string[];
+  scope: RemotePermissionScope;
+};
+
+/**
+ * Static per-agent permission catalog mirroring the Perch bridge
+ * (`native-agent-service.py` PERMISSION_MODES/-_SCOPES/-DEFAULTS) and Perch's
+ * PermissionCatalog. Used to offer a creation-time choice; the bridge is the
+ * validating authority and rejects an id outside its own catalog.
+ */
+export const REMOTE_AGENT_PERMISSION_CATALOG: Record<string, RemotePermissionCapability & { default: string }> = {
+  omp: { options: ["always-ask", "write", "yolo"], scope: "new-session", default: "always-ask", selected: "always-ask" },
+  codex: { options: ["read-only", "workspace-ask", "workspace-auto", "full-access"], scope: "new-session", default: "workspace-ask", selected: "workspace-ask" },
+  qoder: { options: ["default", "acceptEdits", "plan", "dontAsk", "auto", "bypassPermissions"], scope: "next-turn", default: "default", selected: "default" },
+  qoderintl: { options: ["default", "acceptEdits", "plan", "dontAsk", "auto", "bypassPermissions"], scope: "next-turn", default: "default", selected: "default" },
+  claude: { options: ["default", "acceptEdits", "plan", "bypassPermissions"], scope: "next-turn", default: "default", selected: "default" },
+  dsh: { options: [], scope: "runtime-managed", default: "runtime-managed", selected: "runtime-managed" },
+  kimi: { options: ["manual", "yolo", "auto"], scope: "next-message", default: "manual", selected: "manual" },
+};
+
 export type SessionSummary = {
   remoteWorkspace?: RemoteWorkspace;
   id: string;
@@ -45,6 +72,13 @@ export type SessionSummary = {
   remoteWorkspaceLabel?: string;
   /** The remote runtime (agent) hosting this session, e.g. omp/codex/claude. */
   remoteAgent?: string;
+  /**
+   * A remote runtime's real permission capability (Perch bridge contract):
+   * agent-native option ids, the currently selected one, and when a change
+   * takes effect. Absent on local sessions; `permissionMode` stays a PI-mode
+   * placeholder for remote sessions — this field carries the truth.
+   */
+  remotePermission?: RemotePermissionCapability;
   /** Native sessions expose only safe actions in the first continuation slice. */
   capabilities?: SessionCapabilities;
   /** Stable machine-readable reason why a native session cannot be continued. */

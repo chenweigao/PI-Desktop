@@ -48,6 +48,17 @@ export type ComposerToolbarProps = {
    * permission pickers stay disabled. Defaults to `controlsBlocked`.
    */
   modelControlsBlocked?: boolean;
+  /**
+   * Gate for the permission picker when it diverges from the other controls:
+   * a remote session with a next-message/next-turn permission capability can
+   * switch modes while the mode picker stays disabled. Defaults to
+   * `controlsBlocked`.
+   */
+  permissionControlsBlocked?: boolean;
+  /** A remote session's real permission capability; replaces the local list. */
+  remotePermission?: import("@pi-desktop/shared").RemotePermissionCapability | null;
+  /** The remote runtime id, for agent-specific option labels. */
+  remoteAgent?: string;
   localToolsAllowed?: boolean;
   attachmentsAllowed?: boolean;
   stopAllowed?: boolean;
@@ -87,6 +98,9 @@ export function ComposerToolbar({
   thinkingLevel,
   controlsBlocked,
   modelControlsBlocked,
+  permissionControlsBlocked,
+  remotePermission,
+  remoteAgent,
   composerPermissionMode,
   modeOpen,
   setModeOpen,
@@ -172,20 +186,27 @@ export function ComposerToolbar({
         <ComposerPermissionPicker t={t} mode={mode}
           composerPermissionMode={composerPermissionMode}
           permissionOpen={permissionOpen} setPermissionOpen={setPermissionOpen}
-          controlsBlocked={controlsBlocked}
+          controlsBlocked={permissionControlsBlocked ?? controlsBlocked}
+          remotePermission={remotePermission}
+          remoteAgent={remoteAgent}
           onCloseOtherMenus={() => {
             modelMenu.setOpen(false);
             setModeOpen(false);
           }}
           onSelect={async (candidate) => {
                 try {
-                  await configureActiveSession({
-                    mode,
-                    providerId,
-                    modelId,
-                    thinkingLevel,
-                    permissionMode: candidate,
-                  });
+                  // A remote permission change travels alone: resubmitting the
+                  // current model would revalidate it against the catalog and
+                  // could spuriously fail an otherwise valid permission pick.
+                  await configureActiveSession(remotePermission
+                    ? { mode, thinkingLevel, permissionMode: candidate }
+                    : {
+                      mode,
+                      providerId,
+                      modelId,
+                      thinkingLevel,
+                      permissionMode: candidate,
+                    });
                 } catch (error) {
                   showToast(error instanceof Error ? error.message : String(error), {
                     variant: "error",

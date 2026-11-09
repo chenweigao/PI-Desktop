@@ -13,7 +13,7 @@
  * - **Accurate cancel.** `agentAbort` posts the session's `:abort`; the turn is
  *   settled by the snapshot, not the HTTP receipt.
  */
-import { IPC, ErrorCodes } from "@pi-desktop/shared";
+import { IPC, ErrorCodes, type RemotePermissionCapability } from "@pi-desktop/shared";
 import type { RemoteBackend } from "../backend-router.js";
 import { parseRemoteSessionId, parseRemoteApprovalRequestId } from "../backend-router.js";
 import type { KimiClient, KimiSession, KimiSnapshot } from "./kimi-client.js";
@@ -30,6 +30,9 @@ export type KimiBackendOptions = {
   /** Kimi carries the model on the next prompt; the host shares this map so a
    * model chosen at creation and one switched later land on the same key. */
   sessionModels?: Map<string, string>;
+  /** Kimi carries the permission mode on the next prompt too; shared with the
+   * host for the same creation-time reason as sessionModels. */
+  sessionPermissions?: Map<string, string>;
   newRequestId?: () => string;
   log?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
 };
@@ -53,6 +56,17 @@ const HANDLED_CHANNELS: ReadonlySet<string> = new Set([
   IPC.invoke.askToolResolve,
 ]);
 
+/** Kimi's permission contract: manual/yolo/auto, applied to the next prompt. */
+const KIMI_PERMISSION_MODES = ["manual", "yolo", "auto"] as const;
+
+function kimiPermissionCapability(selected: string | null | undefined): RemotePermissionCapability {
+  return {
+    selected: selected && (KIMI_PERMISSION_MODES as readonly string[]).includes(selected) ? selected : "manual",
+    options: [...KIMI_PERMISSION_MODES],
+    scope: "next-message",
+  };
+}
+
 function hostIdFor(args: readonly unknown[]): string {
   const first = args[0];
   const id = typeof first === "string" ? first
@@ -72,6 +86,9 @@ export function createKimiBackend(options: KimiBackendOptions): RemoteBackend {
   // Kimi switches the model per prompt, not per session: a configure call
   // records the choice and the next prompt carries it.
   const pendingModel = options.sessionModels ?? new Map<string, string>();
+  // Same per-prompt contract for the permission mode (manual/yolo/auto); the
+  // choice persists across prompts until changed, like Perch's KimiConnection.
+  const pendingPermission = options.sessionPermissions ?? new Map<string, string>();
   let nextHistoryCursor = 2 ** 48;
   const historyCursors = new Map<number, KimiHistoryCursor>();
 
@@ -88,10 +105,12 @@ export function createKimiBackend(options: KimiBackendOptions): RemoteBackend {
         const hostSessionId = hostIdFor(args);
         const promptId = req.messageId ?? req.idempotencyKey ?? newRequestId();
         const model = pendingModel.get(hostSessionId);
+        const permissionMode = pendingPermission.get(hostSessionId);
         const body: Record<string, unknown> = {
           prompt_id: promptId,
           content: [{ type: "text", text: req.content }],
           ...(model ? { model } : {}),
+          ...(permissionMode ? { permission_mode: permissionMode } : {}),
         };
         try {
           const receipt = await client.post(`/api/v1/sessions/${encodeURIComponent(hostSessionId)}/prompts`, body);
@@ -173,6 +192,11 @@ export function createKimiBackend(options: KimiBackendOptions): RemoteBackend {
             messages,
             mode: "agent",
             permissionMode: "ask",
+            // The real Kimi permission capability: a local choice until it is
+            // sent, then the session's agent_config reflects it.
+            remotePermission: kimiPermissionCapability(
+              pendingPermission.get(hostSessionId) ?? session.agent_config?.permission_mode,
+            ),
             thinkingLevel: "off",
             ...(session.agent_config?.model ? { modelId: session.agent_config.model } : {}),
             updatedAt: session.updated_at ?? new Date().toISOString(),
@@ -187,15 +211,32 @@ export function createKimiBackend(options: KimiBackendOptions): RemoteBackend {
       }
       case IPC.invoke.sessionConfigure: {
         const hostSessionId = hostIdFor(args);
-        const config = (args[1] ?? {}) as { modelId?: string };
-        if (!config.modelId) throw capabilityUnavailable("kimi sessions only support switching the model");
-        const session = await getSession(hostSessionId);
-        if (session.main_turn_active ?? session.busy) {
-          throw capabilityUnavailable("stop or finish the current task before switching the model");
+        const config = (args[1] ?? {}) as { modelId?: string; permissionMode?: string };
+        if (!config.modelId && !config.permissionMode) {
+          throw capabilityUnavailable("kimi sessions support switching the model or the permission mode");
         }
-        // Kimi carries the model on the next prompt; record it now.
-        pendingModel.set(hostSessionId, config.modelId);
-        return { session: { id: (args[0] as { sessionId?: string }).sessionId ?? hostSessionId, modelId: config.modelId } };
+        const session = await getSession(hostSessionId);
+        if (config.modelId) {
+          if (session.main_turn_active ?? session.busy) {
+            throw capabilityUnavailable("stop or finish the current task before switching the model");
+          }
+          // Kimi carries the model on the next prompt; record it now.
+          pendingModel.set(hostSessionId, config.modelId);
+        }
+        if (config.permissionMode !== undefined) {
+          if (!(KIMI_PERMISSION_MODES as readonly string[]).includes(config.permissionMode)) {
+            throw capabilityUnavailable(`permission mode "${config.permissionMode}" is not offered by Kimi`);
+          }
+          // Applied to the next prompt (Kimi's next-message scope); safe to
+          // change while a turn is running because it only travels with a
+          // future prompt.
+          pendingPermission.set(hostSessionId, config.permissionMode);
+        }
+        return { session: {
+          id: (args[0] as { sessionId?: string }).sessionId ?? hostSessionId,
+          ...(config.modelId ? { modelId: config.modelId } : session.agent_config?.model ? { modelId: session.agent_config.model } : {}),
+          remotePermission: kimiPermissionCapability(pendingPermission.get(hostSessionId) ?? session.agent_config?.permission_mode),
+        } };
       }
       case IPC.invoke.sessionDelete: {
         await client.post(`/api/v1/sessions/${encodeURIComponent(hostIdFor(args))}:delete`, {});

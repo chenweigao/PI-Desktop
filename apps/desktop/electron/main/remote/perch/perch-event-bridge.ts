@@ -27,7 +27,7 @@
  * restarted (its ids/epochs changed); the per-session diff state resets so no
  * stale streaming row survives.
  */
-import { IPC, type AgentEventEnvelope, type RemoteInteractionUpdate, type ToolPermissionRequest, type UiMessage } from "@pi-desktop/shared";
+import { IPC, type AgentEventEnvelope, type AskToolRequest, type RemoteInteractionUpdate, type ToolPermissionRequest, type UiMessage } from "@pi-desktop/shared";
 import { makeRemoteApprovalRequestId, makeRemoteSessionId } from "../backend-router.js";
 import type { PerchInteraction } from "./perch-client.js";
 
@@ -69,7 +69,8 @@ type SessionState = {
   lastRevision: number;
   lastTurnId: string | null;
   lastMessages: Map<string, UiMessage>;
-  liveInteractions: Set<string>;
+  /** Open interaction id → which card kind the renderer is showing for it. */
+  liveInteractions: Map<string, "permission" | "ask">;
 };
 
 /** Split an OMP approval title "Allow tool: bash\nCommand: pwd && …" into parts. */
@@ -81,6 +82,48 @@ function splitOmpTitle(title: string | undefined): { toolName: string; command?:
   const rest = match[2]?.trim() ?? "";
   const command = /^Command:\s*([\s\S]*)$/.exec(rest)?.[1];
   return { toolName, ...(command ? { command } : {}) };
+}
+
+/**
+ * Split open interactions into tool approvals and user questions, mirroring
+ * Perch's own NativeInteractionView: a structured `AskUserQuestion`, an OMP
+ * `input`/`editor` prompt, or a `select` without the "Allow tool:" approval
+ * title are questions (ask cards); everything else is a tool approval.
+ */
+export function classifyPerchInteraction(interaction: PerchInteraction): "permission" | "ask" {
+  if (interaction.name === "AskUserQuestion") return "ask";
+  if (interaction.method === "input" || interaction.method === "editor") return "ask";
+  if (interaction.method === "select" && !/^Allow tool:/.test((interaction.title ?? "").trim())) return "ask";
+  return "permission";
+}
+
+function toAskRequest(remoteSessionId: string, interaction: PerchInteraction): AskToolRequest {
+  const requestId = makeRemoteApprovalRequestId(remoteSessionId, interaction.id);
+  if (interaction.name === "AskUserQuestion") {
+    const input = (interaction.input ?? {}) as { questions?: Array<{ question?: string; options?: Array<string | { label?: string; description?: string }>; multi?: boolean; multiSelect?: boolean }> };
+    return {
+      requestId,
+      sessionId: remoteSessionId,
+      toolCallId: "",
+      questions: (input.questions ?? []).map((question) => ({
+        question: question.question ?? "",
+        options: (question.options ?? []).map((option) =>
+          typeof option === "string" ? { label: option } : { label: option.label ?? "", ...(option.description ? { description: option.description } : {}) }),
+        ...(question.multi || question.multiSelect ? { multiSelect: true } : {}),
+      })),
+    };
+  }
+  const question = [interaction.title, interaction.message].filter((part) => part && part.trim()).join("\n");
+  if (interaction.method === "select") {
+    return {
+      requestId,
+      sessionId: remoteSessionId,
+      toolCallId: "",
+      questions: [{ question, options: (interaction.options ?? []).map((option) => ({ label: option })) }],
+    };
+  }
+  // input/editor: free-form text; the ask card's custom option collects it.
+  return { requestId, sessionId: remoteSessionId, toolCallId: "", questions: [{ question, options: [] }] };
 }
 
 function toPermissionRequest(remoteSessionId: string, interaction: PerchInteraction): ToolPermissionRequest {
@@ -203,7 +246,7 @@ export function createPerchEventBridge(options: PerchEventBridgeOptions): PerchE
   const stateFor = (hostSessionId: string): SessionState => {
     let state = sessions.get(hostSessionId);
     if (!state) {
-      state = { busy: false, lastRevision: -1, lastTurnId: null, lastMessages: new Map(), liveInteractions: new Set() };
+      state = { busy: false, lastRevision: -1, lastTurnId: null, lastMessages: new Map(), liveInteractions: new Map() };
       sessions.set(hostSessionId, state);
     }
     return state;
@@ -242,31 +285,31 @@ export function createPerchEventBridge(options: PerchEventBridgeOptions): PerchE
           }, state.lastTurnId ?? null);
         }
         state.lastMessages = new Map();
-        state.liveInteractions = new Set();
+        state.liveInteractions = new Map();
         state.busy = false;
       }
       state.lastRevision = revision;
       const turnId = snapshot.turnId ?? null;
       state.lastTurnId = turnId ?? state.lastTurnId;
 
-      /* ---- approvals ---- */
+      /* ---- approvals & questions ---- */
       const now = Date.now() / 1000;
       const open = (snapshot.interactions ?? []).filter((item) => !item.expires || item.expires > now);
-      const currentIds = new Set(open.map((item) => item.id));
-      for (const id of state.liveInteractions) {
-        if (!currentIds.has(id)) {
+      const current = new Map(open.map((item) => [item.id, classifyPerchInteraction(item)] as const));
+      for (const [id, requestKind] of state.liveInteractions) {
+        if (!current.has(id)) {
           const update: RemoteInteractionUpdate = {
-            kind: "resolved", sessionId: remoteSessionId, requestKind: "permission",
+            kind: "resolved", sessionId: remoteSessionId, requestKind,
             requestId: makeRemoteApprovalRequestId(remoteSessionId, id),
           };
           emit(IPC.event.remoteInteractions, update);
         }
       }
-      state.liveInteractions = currentIds;
+      state.liveInteractions = current;
       const snapshotUpdate: RemoteInteractionUpdate = {
         kind: "snapshot", sessionId: remoteSessionId,
-        permissions: open.map((item) => toPermissionRequest(remoteSessionId, item)),
-        asks: [],
+        permissions: open.filter((item) => current.get(item.id) === "permission").map((item) => toPermissionRequest(remoteSessionId, item)),
+        asks: open.filter((item) => current.get(item.id) === "ask").map((item) => toAskRequest(remoteSessionId, item)),
       };
       emit(IPC.event.remoteInteractions, snapshotUpdate);
 

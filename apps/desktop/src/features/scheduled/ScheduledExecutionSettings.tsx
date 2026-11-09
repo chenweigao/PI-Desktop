@@ -43,7 +43,7 @@ export function ScheduledExecutionSettings({
   modelSelection: ScheduledModelSelection;
   busy: boolean;
   onWorkspaceChange: (path: string) => void;
-  onPermissionChange: (mode: GlobalPermissionMode) => void;
+  onPermissionChange: (mode: string) => void;
   onModelChange: (selection: ScheduledModelSelection) => void;
   sessionMode: ScheduledSessionMode;
   onSessionModeChange: (mode: ScheduledSessionMode) => void;

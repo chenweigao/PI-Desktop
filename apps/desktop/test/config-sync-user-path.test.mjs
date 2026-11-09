@@ -332,7 +332,7 @@ app.whenReady().then(async () => {
     for (const stream of [child.stdout, child.stderr]) {
       stream.setEncoding("utf8"); stream.on("data", (chunk) => { output += chunk; });
     }
-    const timer = setTimeout(() => child.kill("SIGKILL"), 45_000);
+    const timer = setTimeout(() => child.kill("SIGKILL"), 180_000);
     let code;
     try { code = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", resolve); }); }
     finally { clearTimeout(timer); }

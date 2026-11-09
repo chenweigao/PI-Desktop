@@ -268,3 +268,29 @@ test("the in-flight turn's streaming text renders as a live assistant row", () =
   assert.equal(start.event.message.content, "streaming…");
   assert.equal(start.event.message.status, "streaming");
 });
+
+test("permission mode: configure stores it, the next prompt carries permission_mode, invalid ids refuse", async () => {
+  const bridge = await startKimi();
+  const sessionPermissions = new Map();
+  const backend = createKimiBackend({ hostKey: "dev", client: clientFor(bridge), sessionPermissions });
+  const sessionId = makeRemoteSessionId("dev", "ks1");
+  // An id outside Kimi's catalog is refused before anything is recorded.
+  await assert.rejects(
+    backend.invoke(IPC.invoke.sessionConfigure, [{ sessionId }, { permissionMode: "bypassPermissions" }]),
+    /not offered by Kimi/,
+  );
+  assert.equal(sessionPermissions.size, 0);
+  // A valid mode lands on the next prompt (next-message scope).
+  const configured = await backend.invoke(IPC.invoke.sessionConfigure, [{ sessionId }, { permissionMode: "yolo" }]);
+  assert.deepEqual(configured.session.remotePermission, { selected: "yolo", options: ["manual", "yolo", "auto"], scope: "next-message" });
+  await backend.invoke(IPC.invoke.agentPrompt, [{ sessionId, content: "hello", messageId: "p-1" }]);
+  assert.equal(bridge.prompts.at(-1).permission_mode, "yolo");
+  // The choice persists across prompts until changed (Perch KimiConnection parity).
+  await backend.invoke(IPC.invoke.agentPrompt, [{ sessionId, content: "again", messageId: "p-2" }]);
+  assert.equal(bridge.prompts.at(-1).permission_mode, "yolo");
+  // sessionGet reports the pending choice, not a hardcoded "ask".
+  const got = await backend.invoke(IPC.invoke.sessionGet, [{ sessionId }]);
+  assert.equal(got.session.remotePermission.selected, "yolo");
+  assert.equal(got.session.remotePermission.scope, "next-message");
+  await new Promise((r) => bridge.server.close(r));
+});

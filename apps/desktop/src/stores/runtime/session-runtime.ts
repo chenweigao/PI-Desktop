@@ -43,7 +43,10 @@ export type SessionConfiguration = Pick<
   SessionSummary,
   "mode" | "providerId" | "modelId" | "thinkingLevel"
 > &
-  Partial<Pick<SessionSummary, "permissionMode" | "fastMode">>;
+  Partial<Pick<SessionSummary, "fastMode">> & {
+    /** Remote sessions pass the runtime's own permission option id. */
+    permissionMode?: SessionSummary["permissionMode"] | string;
+  };
 
 export type SessionSelection = { id: string; intent: number };
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { RemoteHostSummary } from "@pi-desktop/shared";
+import { REMOTE_AGENT_PERMISSION_CATALOG, type RemoteHostSummary } from "@pi-desktop/shared";
 import { api } from "../../lib/api";
 import { catalogAgents, directRemoteHosts } from "../../lib/remote-direct-session";
 import { remoteHostErrorKey } from "../../lib/remote-host-errors";
@@ -14,6 +14,8 @@ export type DirectRemoteSessionRequest = {
   /** Remote absolute cwd; absent means the host's home directory. */
   cwd?: string;
   remoteProvider?: string;
+  /** The runtime's own permission option id, fixed at creation for some runtimes. */
+  permissionMode?: string;
 };
 
 /**
@@ -33,6 +35,9 @@ export function RemoteSessionLauncher({ onCreate, onClose }: {
   const [busy, setBusy] = useState<string | null>(null);
   // The agent picker remembers a browsed cwd so the choice still applies.
   const [agentPicker, setAgentPicker] = useState<{ hostKey: string; cwd?: string } | null>(null);
+  // Second step after an agent pick: runtimes whose permission mode is fixed
+  // at creation (or simply has several modes) ask for it up front.
+  const [permissionPicker, setPermissionPicker] = useState<{ hostKey: string; agent: string; cwd?: string } | null>(null);
   const [browseHost, setBrowseHost] = useState<RemoteHostSummary | null>(null);
   const remoteModelCatalogs = useAppStore((state) => state.remoteModelCatalogs);
   const loadRemoteModelCatalog = useAppStore((state) => state.loadRemoteModelCatalog);
@@ -54,21 +59,34 @@ export function RemoteSessionLauncher({ onCreate, onClose }: {
     return () => { active = false; };
   }, [reload, t]);
 
-  const create = async (host: RemoteHostSummary, agent?: string, cwd?: string) => {
+  const create = async (host: RemoteHostSummary, agent?: string, cwd?: string, permissionMode?: string) => {
     if (busy) return;
     setBusy(host.hostKey);
     setAgentPicker(null);
+    setPermissionPicker(null);
     try {
       await onCreate({
         hostKey: host.hostKey,
         ...(agent ? { remoteProvider: agent } : {}),
         ...(cwd ? { cwd } : {}),
+        ...(permissionMode ? { permissionMode } : {}),
       });
       onClose();
     } catch {
       // The caller reports the failure; the panel stays open for a retry.
     } finally {
       setBusy(null);
+    }
+  };
+
+  /** Picking an agent with several permission modes asks for one first: on
+   * OMP/Codex the mode is fixed at creation, so "decide later" does not exist. */
+  const pickAgent = (host: RemoteHostSummary, agent: string, cwd?: string) => {
+    const catalog = REMOTE_AGENT_PERMISSION_CATALOG[agent];
+    if (catalog && catalog.options.length > 1) {
+      setPermissionPicker({ hostKey: host.hostKey, agent, ...(cwd ? { cwd } : {}) });
+    } else {
+      void create(host, agent, cwd);
     }
   };
 
@@ -106,7 +124,9 @@ export function RemoteSessionLauncher({ onCreate, onClose }: {
           : { hostKey: host.hostKey, ...(cwd ? { cwd } : {}) },
       );
     } else if (catalog !== undefined && agents.length === 1) {
-      void create(host, agents[0], cwd);
+      // A single runtime still carries a creation-fixed permission choice
+      // (OMP/Codex): offer it instead of silently picking the default.
+      pickAgent(host, agents[0], cwd);
     } else {
       void create(host, undefined, cwd);
     }
@@ -187,9 +207,34 @@ export function RemoteSessionLauncher({ onCreate, onClose }: {
                   type="button"
                   className="sidebar-remote-agent-option"
                   disabled={busy !== null}
-                  onClick={() => void create(host, agent, agentPicker.cwd)}
+                  aria-expanded={permissionPicker?.agent === agent && permissionPicker?.hostKey === host.hostKey}
+                  onClick={() => pickAgent(host, agent, agentPicker.cwd)}
                 >
                   {agent}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {permissionPicker?.hostKey === host.hostKey ? (
+            <div
+              className="sidebar-remote-agent-picker"
+              role="group"
+              aria-label={t("chat.permissionMode")}
+            >
+              {(REMOTE_AGENT_PERMISSION_CATALOG[permissionPicker.agent]?.options ?? []).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className="sidebar-remote-agent-option"
+                  disabled={busy !== null}
+                  onClick={() => void create(host, permissionPicker.agent, permissionPicker.cwd, option)}
+                >
+                  {t(`chat.remotePermissionOption.${permissionPicker.agent}.${option}`, {
+                    defaultValue: t(`chat.remotePermissionOption.${option}`, { defaultValue: option }),
+                  })}
+                  {option === REMOTE_AGENT_PERMISSION_CATALOG[permissionPicker.agent]?.default
+                    ? ` (${t("remote:permissionDefault")})`
+                    : ""}
                 </button>
               ))}
             </div>

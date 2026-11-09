@@ -860,7 +860,10 @@ export const api = {
   configureSession: (
     id: string,
     config: Pick<SessionSummary, "mode" | "providerId" | "modelId"> &
-      Partial<Pick<SessionSummary, "thinkingLevel" | "permissionMode" | "fastMode">>,
+      Partial<Pick<SessionSummary, "thinkingLevel" | "fastMode">> & {
+        /** Remote sessions pass the runtime's own permission option id. */
+        permissionMode?: SessionSummary["permissionMode"] | string;
+      },
   ) =>
     invoke<{ session: SessionSummary }>(
       IPC.invoke.sessionConfigure,
@@ -2111,7 +2114,7 @@ export const api = {
   /** Register a Perch native-agent host over SSH; the bridge token is
    * discovered from the remote endpoint.json, never pasted here. */
   addPerchRemoteHost: (request: { host: string; label: string; user?: string; port?: number; identityFile?: string; password?: string }) =>
-    invoke<{ host: RemoteHostSummary }>(IPC.invoke.remoteHostAddPerch, request),
+    invoke<{ host: RemoteHostSummary; alsoAdded?: RemoteHostSummary }>(IPC.invoke.remoteHostAddPerch, request),
   /** Register a Kimi channel host over SSH; the service token is discovered from the remote server.token. */
   addKimiRemoteHost: (request: { host: string; label: string; user?: string; port?: number; identityFile?: string; password?: string }) =>
     invoke<{ host: RemoteHostSummary }>(IPC.invoke.remoteHostAddKimi, request),
@@ -2131,6 +2134,9 @@ export const api = {
   /** The Perch bridge's combined model catalog (each entry names its runtime). */
   remoteHostModels: (hostKey: string) =>
     invoke<{ models: { id: string; provider: string; name: string; agent: string }[] }>(IPC.invoke.remoteHostModels, { hostKey }),
+  /** Live per-runtime readiness on a Perch host; empty for other transports. */
+  remoteHostRuntimes: (hostKey: string) =>
+    invoke<{ runtimes: import("@pi-desktop/shared").RemoteRuntimeStatus[] }>(IPC.invoke.remoteHostRuntimes, { hostKey }),
   remoteHostProjects: (hostKey: string) =>
     invoke<RemoteHostProjectsResult>(IPC.invoke.remoteHostProjects, { hostKey }),
   registerRemoteProject: (hostKey: string, path: string) =>

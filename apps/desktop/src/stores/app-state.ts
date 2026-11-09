@@ -115,7 +115,9 @@ export type DraftSessionConfiguration = {
   thinkingLevel?: SessionThinkingLevel;
   providerId?: string;
   modelId?: string;
-  permissionMode?: PermissionMode;
+  /** Local drafts take a PI PermissionMode; a remote draft may carry the
+   * runtime's own option id. */
+  permissionMode?: PermissionMode | string;
   /** Session `/fast` switch carried into the created session (ADR 0334). */
   fastMode?: boolean;
 };
@@ -250,6 +252,8 @@ export type AppState = {
     remoteProvider?: string;
     /** Perch: the model to run; must exist in the host's catalog. */
     remoteModel?: string;
+    /** Perch/Kimi: the runtime's own permission option id, chosen at creation. */
+    remotePermissionMode?: string;
   }) => Promise<void>;
   forkSession: (id: string) => Promise<void>;
   forkAssistantMessage: (messageId: string) => Promise<void>;
@@ -258,7 +262,9 @@ export type AppState = {
     providerId?: string;
     modelId?: string;
     thinkingLevel: SessionThinkingLevel;
-    permissionMode?: PermissionMode;
+    /** Local sessions take a PI PermissionMode; remote sessions take the
+     * runtime's own option id (e.g. OMP "always-ask", Kimi "yolo"). */
+    permissionMode?: PermissionMode | string;
     fastMode?: boolean;
   }) => Promise<void>;
   /** Returns true once accepted unless concurrent smart Stop restores it. */

@@ -297,6 +297,7 @@ export const IPC = {
     remoteHostProjects: "pi-desktop/remoteHost/projects",
     /** Combined Perch model catalog for a host (each entry names its runtime). */
     remoteHostModels: "pi-desktop/remoteHost/models",
+    remoteHostRuntimes: "pi-desktop/remoteHost/runtimes",
     remoteHostBrowseProjects: "pi-desktop/remoteHost/browseProjects",
     remoteHostRegisterProject: "pi-desktop/remoteHost/registerProject",
     remoteHostSessions: "pi-desktop/remoteHost/sessions",

@@ -7,6 +7,7 @@ import type {
   ScheduledTask,
   ScheduledTaskSchedule,
 } from "@pi-desktop/shared";
+import { isGlobalPermissionMode } from "@pi-desktop/shared";
 import { Button, Field, Input, Textarea } from "../../components/ui";
 import { SettingsMenuSelect } from "../../components/settings/SettingsMenuSelect";
 import { ScheduledWeekdaySelect } from "./ScheduledWeekdaySelect";
@@ -217,8 +218,10 @@ export function ScheduledEditor({
               setWorkspaceTouched(true);
             }}
             onPermissionChange={(mode) => {
-              setPermissionMode(mode);
-              setPermissionTouched(true);
+              if (isGlobalPermissionMode(mode)) {
+                setPermissionMode(mode);
+                setPermissionTouched(true);
+              }
             }}
             onModelChange={(selection) => {
               setModelSelection(selection);

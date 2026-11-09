@@ -154,7 +154,7 @@ export function registerRemoteHostIpc(options: RegisterRemoteHostIpcOptions): vo
     IPC.invoke.remoteHostAddPerch,
     async (request: {
       host: string; label: string; user?: string; port?: number; identityFile?: string; password?: string;
-    }): Promise<{ host: RemoteHostSummary }> => {
+    }): Promise<{ host: RemoteHostSummary; alsoAdded?: RemoteHostSummary }> => {
       const boot = requireBoot(getRemoteHostsBoot());
       const host = trim(request?.host);
       const label = trim(request?.label) || host;
@@ -182,7 +182,10 @@ export function registerRemoteHostIpc(options: RegisterRemoteHostIpcOptions): vo
           },
         },
       });
-      return { host: summary };
+      // One saved connection, every runtime discovered under it: when the
+      // same machine also serves Kimi, register that channel too.
+      const alsoAdded = await boot.probeKimiSibling(hostKey).catch(() => null);
+      return { host: summary, ...(alsoAdded ? { alsoAdded } : {}) };
     },
   );
 

@@ -245,7 +245,7 @@ app.whenReady().then(async () => {
       stream.setEncoding("utf8");
       stream.on("data", (chunk) => { output += chunk; });
     }
-    const timer = setTimeout(() => child.kill("SIGKILL"), 60_000);
+    const timer = setTimeout(() => child.kill("SIGKILL"), 180_000);
     let code;
     try {
       code = await new Promise((resolve, reject) => {

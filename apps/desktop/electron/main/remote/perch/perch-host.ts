@@ -59,6 +59,8 @@ export interface PerchHost {
   browse(path?: string): Promise<RemoteHostBrowseProjectsResult>;
   /** Combined model catalog; each entry names the runtime (`agent`) that can serve it. */
   models(): Promise<PerchModelEntry[]>;
+  /** Bridge `GET /setup?provider=`: one runtime's install/model/credential readiness. */
+  setupStatus(provider: string): Promise<Record<string, unknown>>;
   setModel(hostSessionId: string, model: string, provider: string): Promise<unknown>;
   createSession(input: { cwd: string; provider?: string; model?: string; permissionMode?: string; title?: string }): Promise<PerchSessionSummary>;
 }
@@ -71,20 +73,31 @@ export type PerchModelEntry = {
 /** Runtimes the Perch native bridge actually serves (perch NATIVE-AGENTS). */
 export const PERCH_PROVIDERS = new Set(["omp", "qoder", "qoderintl", "dsh", "codex", "claude"]);
 
-/** Map a PI permission mode onto each runtime's create-time modes. */
+/**
+ * Map a requested permission mode onto each runtime's create-time modes. PI
+ * modes map onto their semantic equivalents; agent-native ids pass through so
+ * the bridge's own catalog validates them (an unknown id fails at the bridge
+ * with its real error instead of silently downgrading to the safest mode).
+ */
 export function perchPermissionModeFor(provider: string, value: string | undefined): string {
   if (provider === "omp") {
     if (value === "write" || value === "yolo" || value === "always-ask") return value;
-    if (value === "auto") return "write";
-    return "always-ask";
+    if (value === "auto" || value === "accept-edits") return "write";
+    if (value === undefined || value === "ask" || value === "inherit") return "always-ask";
+    return value;
   }
   if (provider === "codex") {
     if (value === "read-only" || value === "workspace-ask" || value === "workspace-auto" || value === "full-access") return value;
-    return "workspace-ask";
+    if (value === "auto") return "workspace-auto";
+    if (value === "accept-edits") return "workspace-ask";
+    if (value === undefined || value === "ask" || value === "inherit") return "workspace-ask";
+    return value;
   }
   if (provider === "dsh") return "runtime-managed";
   if (value === "default" || value === "acceptEdits" || value === "plan" || value === "dontAsk" || value === "auto" || value === "bypassPermissions") return value;
-  return "default";
+  if (value === "accept-edits") return "acceptEdits";
+  if (value === undefined || value === "ask" || value === "inherit") return "default";
+  return value;
 }
 
 /** Back-compat alias: OMP-only mapping used by the first adapter version. */
@@ -396,6 +409,12 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
       const { client: live } = assertLive();
       const catalog = (await live.get("/models")) as { models?: PerchModelEntry[] };
       return catalog.models ?? [];
+    },
+    async setupStatus(provider) {
+      const { client: live } = assertLive();
+      // The bridge probes the runtime live (CLI discovery + credential check);
+      // it can take seconds, which is why this is an explicit user action.
+      return (await live.get("/setup", { provider })) as Record<string, unknown>;
     },
     async setModel(hostSessionId, model, provider) {
       const { client: live } = assertLive();

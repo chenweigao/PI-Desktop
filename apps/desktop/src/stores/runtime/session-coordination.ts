@@ -10,6 +10,7 @@ import {
   initialThinkingLevelForUnmatchedModel,
   normalizeMode,
 } from "@pi-desktop/shared";
+import { isPermissionMode } from "../../features/chat/composer/model";
 import { api } from "../../lib/api";
 import { sameComposerModelId } from "../../lib/composer-models";
 import { scheduleHomeDraftAdopt } from "../../lib/composer-draft-cache";
@@ -312,13 +313,18 @@ export function createSessionCoordination({
         );
     const previousSessionId = state.activeSessionId;
     revealEmptyCreatingSession(active);
+    // A local session only accepts a PI PermissionMode; a remote draft's
+    // agent-native id never reaches this local create path.
+    const draftPermissionMode = isPermissionMode(draftConfig?.permissionMode)
+      ? (draftConfig?.permissionMode as import("@pi-desktop/shared").PermissionMode | undefined)
+      : undefined;
     let created: Awaited<ReturnType<typeof api.createSession>>;
     try {
       created = await api.createSession({
         title: untitledTaskTitle(),
         mode: draftConfig?.mode ?? normalizeMode(settings?.defaultMode),
         thinkingLevel: draftConfig?.thinkingLevel ?? defaultThinkingLevel,
-        permissionMode: draftConfig?.permissionMode,
+        permissionMode: draftPermissionMode,
         ...(draftConfig?.fastMode ? { fastMode: true } : {}),
         providerId: inherited.providerId,
         modelId: inherited.modelId,

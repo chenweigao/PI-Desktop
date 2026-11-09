@@ -99,6 +99,14 @@ export function applyOptimisticSessionConfiguration<T extends SessionThinkingSna
   const modelChanged =
     config.modelId !== undefined && config.modelId !== session.modelId;
   const next = { ...session, ...config };
+  // A remote session's permission mode is an agent-native id, not a PI
+  // PermissionMode: pin it on the remote capability and leave the local
+  // placeholder field untouched.
+  const remote = (session as { remotePermission?: { selected: string | null; options: string[]; scope: string } }).remotePermission;
+  if (remote && typeof config.permissionMode === "string") {
+    (next as { remotePermission?: unknown }).remotePermission = { ...remote, selected: config.permissionMode };
+    (next as { permissionMode?: unknown }).permissionMode = (session as { permissionMode?: unknown }).permissionMode;
+  }
   if (!providerChanged && !modelChanged) return next;
   delete next.supportsReasoning;
   delete next.supportsVision;

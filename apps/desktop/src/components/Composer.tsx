@@ -352,6 +352,13 @@ export function Composer({
       : sessionPermissionMode;
   const composerPermissionMode: Exclude<PermissionMode, "inherit"> =
     mode === "goal" ? "auto" : effectivePermissionMode;
+  // A remote session's real permission capability (Perch/Kimi): when the
+  // runtime allows mid-session changes (next-message/next-turn scope) the
+  // picker stays enabled with the agent-native options; fixed-at-creation and
+  // runtime-managed scopes render read-only with their scope named.
+  const remotePermission = remoteSession ? (activeSession?.remotePermission ?? null) : null;
+  const remotePermissionSelectable = !!remotePermission && remotePermission.options.length > 0
+    && (remotePermission.scope === "next-message" || remotePermission.scope === "next-turn");
   const recentModels = useAppStore((s) => s.recentModels);
   const selectedModel = remoteSession ? { providerId: activeSession?.providerId, modelId: activeSession?.modelId } : inheritedSessionModelBinding({
     draft: activeSession ?? draftConfiguration,
@@ -646,11 +653,14 @@ export function Composer({
             setModeOpen={setModeOpen}
             permissionOpen={permissionOpen}
             setPermissionOpen={setPermissionOpen}
-            // Remote sessions keep the mode/permission pickers disabled: the
-            // Perch bridge only honors the model switch, so those writes
-            // would be silently ignored.
+            // Remote sessions keep the mode picker disabled (the bridge does
+            // not honor a PI mode switch); the permission picker is unblocked
+            // when the remote runtime exposes a selectable capability.
             controlsBlocked={controlsBlocked || remoteSession}
             modelControlsBlocked={controlsBlocked}
+            permissionControlsBlocked={controlsBlocked || (remoteSession && !remotePermissionSelectable)}
+            remotePermission={remotePermission}
+            remoteAgent={activeSession?.remoteAgent}
             localToolsAllowed={localToolsAllowed}
             attachmentsAllowed={attachmentsAllowed}
             stopAllowed={sessionAllows(capabilitySession, "canStop")}

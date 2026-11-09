@@ -553,3 +553,153 @@ test("a model from another runtime is refused, not misrouted as a model switch",
   );
   await new Promise((r) => bridge.server.close(r));
 });
+
+test("interaction classification: approvals stay permissions, input/editor/select-questions become asks", async () => {
+  const { classifyPerchInteraction } = await import("../electron/main/remote/perch/perch-event-bridge.ts");
+  assert.equal(classifyPerchInteraction({ id: "1", method: "confirm", title: "Run ls?" }), "permission");
+  assert.equal(classifyPerchInteraction({ id: "2", method: "select", title: "Allow tool: bash\nCommand: ls", options: ["Approve", "Deny"] }), "permission");
+  assert.equal(classifyPerchInteraction({ id: "3", method: "select", title: "Which region?", options: ["cn", "us"] }), "ask");
+  assert.equal(classifyPerchInteraction({ id: "4", method: "input", title: "Enter a value" }), "ask");
+  assert.equal(classifyPerchInteraction({ id: "5", method: "editor", title: "Edit the config" }), "ask");
+  assert.equal(classifyPerchInteraction({ id: "6", name: "AskUserQuestion", input: { questions: [{ question: "Pick", options: [{ label: "A" }] }] } }), "ask");
+});
+
+test("snapshot routes question interactions to asks, approvals to permissions; resolved keeps the right kind", async () => {
+  const emitted = [];
+  const bridge = createPerchEventBridge({ hostKey: "dev", emit: (c, p) => emitted.push({ channel: c, payload: p }) });
+  bridge.applySnapshot("s1", { busy: true, interactions: [
+    { id: "ap-1", method: "select", title: "Allow tool: bash\nCommand: ls", options: ["Approve", "Deny"] },
+    { id: "q-1", method: "input", title: "Enter the release version" },
+    { id: "q-2", method: "select", title: "Which region?", options: ["cn", "us"] },
+    { id: "q-3", name: "AskUserQuestion", input: { questions: [{ question: "Pick one", options: [{ label: "A", description: "first" }, { label: "B" }] }] } },
+  ] });
+  const snapshot = emitted.find((e) => e.payload?.kind === "snapshot");
+  assert.equal(snapshot.payload.permissions.length, 1, "only the approval is a permission");
+  assert.equal(snapshot.payload.asks.length, 3, "questions surface as asks");
+  const inputAsk = snapshot.payload.asks.find((a) => a.requestId.endsWith("q-1"));
+  assert.equal(inputAsk.questions[0].question, "Enter the release version");
+  assert.deepEqual(inputAsk.questions[0].options, [], "input is free text");
+  const selectAsk = snapshot.payload.asks.find((a) => a.requestId.endsWith("q-2"));
+  assert.deepEqual(selectAsk.questions[0].options.map((o) => o.label), ["cn", "us"]);
+  const structured = snapshot.payload.asks.find((a) => a.requestId.endsWith("q-3"));
+  assert.equal(structured.questions[0].options[0].description, "first");
+  // Resolution emits the matching requestKind so the right card clears.
+  bridge.applySnapshot("s1", { busy: true, interactions: [] });
+  const resolved = emitted.filter((e) => e.payload?.kind === "resolved");
+  assert.equal(resolved.length, 4);
+  assert.equal(resolved.find((r) => r.payload.requestId.endsWith("ap-1")).payload.requestKind, "permission");
+  assert.equal(resolved.find((r) => r.payload.requestId.endsWith("q-1")).payload.requestKind, "ask");
+});
+
+test("askToolResolve answers OMP input/select questions and AskUserQuestion; empty means cancelled", async () => {
+  const bridge = await startBridge();
+  const backend = createPerchBackend({ hostKey: "dev", client: clientFor(bridge) });
+  const sessionId = makeRemoteSessionId("dev", "s1");
+  // input: free text → {value}
+  bridge.interactions.push({ id: "q-in", method: "input", title: "Version?" });
+  await backend.invoke(IPC.invoke.askToolResolve, [{ requestId: makeRemoteApprovalRequestId(sessionId, "q-in"), answers: [["1.2.3"]] }]);
+  assert.equal(bridge.answers.at(-1).value, "1.2.3");
+  // input skipped → cancelled
+  bridge.interactions.push({ id: "q-in2", method: "input", title: "Version?" });
+  await backend.invoke(IPC.invoke.askToolResolve, [{ requestId: makeRemoteApprovalRequestId(sessionId, "q-in2"), answers: [null] }]);
+  assert.equal(bridge.answers.at(-1).cancelled, true);
+  // select question: chosen option → {value}; an unknown option is refused
+  bridge.interactions.push({ id: "q-sel", method: "select", title: "Region?", options: ["cn", "us"] });
+  await assert.rejects(
+    backend.invoke(IPC.invoke.askToolResolve, [{ requestId: makeRemoteApprovalRequestId(sessionId, "q-sel"), answers: [["eu"]] }]),
+    /not one of the offered options/,
+  );
+  await backend.invoke(IPC.invoke.askToolResolve, [{ requestId: makeRemoteApprovalRequestId(sessionId, "q-sel"), answers: [["us"]] }]);
+  assert.equal(bridge.answers.at(-1).value, "us");
+  // AskUserQuestion → {allow, answers keyed by question text}
+  bridge.interactions.push({ id: "q-auq", name: "AskUserQuestion", input: { questions: [
+    { question: "Framework?", options: [{ label: "React" }, { label: "Vue" }] },
+    { question: "CSS?", options: [{ label: "Tailwind" }] },
+  ] } });
+  await backend.invoke(IPC.invoke.askToolResolve, [{ requestId: makeRemoteApprovalRequestId(sessionId, "q-auq"), answers: [["Vue"], ["Tailwind"]] }]);
+  const auq = bridge.answers.at(-1);
+  assert.equal(auq.allow, true);
+  assert.deepEqual(auq.answers, { "Framework?": "Vue", "CSS?": "Tailwind" });
+  // an approval id is not a question; a stale id fails closed
+  bridge.interactions.push({ id: "ap-1", method: "confirm", title: "Run ls?" });
+  await assert.rejects(
+    backend.invoke(IPC.invoke.askToolResolve, [{ requestId: makeRemoteApprovalRequestId(sessionId, "ap-1"), answers: [["x"]] }]),
+    /not a question/,
+  );
+  await assert.rejects(
+    backend.invoke(IPC.invoke.askToolResolve, [{ requestId: makeRemoteApprovalRequestId(sessionId, "gone"), answers: [["x"]] }]),
+    /no longer open/,
+  );
+  await new Promise((r) => bridge.server.close(r));
+});
+
+test("sessionGet surfaces the bridge's real permission capability", async () => {
+  const bridge = await startBridge();
+  const orig = bridge.server.listeners("request")[0];
+  bridge.server.removeAllListeners("request");
+  bridge.server.on("request", (req, res) => {
+    const url = new URL(req.url, "http://x");
+    const reply = (code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+    if (req.method === "GET" && url.pathname === "/sessions/s1") {
+      return reply(200, { id: "s1", provider: "qoder", busy: false, updated: 1, revision: 1, pending: 0, interactions: [], messages: [],
+        permission: { selected: "acceptEdits", options: ["default", "acceptEdits", "plan", "dontAsk", "auto", "bypassPermissions"], scope: "next-turn" } });
+    }
+    orig(req, res);
+  });
+  const backend = createPerchBackend({ hostKey: "dev", client: clientFor(bridge) });
+  const result = await backend.invoke(IPC.invoke.sessionGet, [{ sessionId: makeRemoteSessionId("dev", "s1") }]);
+  assert.deepEqual(result.session.remotePermission, {
+    selected: "acceptEdits",
+    options: ["default", "acceptEdits", "plan", "dontAsk", "auto", "bypassPermissions"],
+    scope: "next-turn",
+  });
+  await new Promise((r) => bridge.server.close(r));
+});
+
+test("sessionConfigure permission: next-turn runtimes POST /permission, new-session runtimes refuse without a write", async () => {
+  const bridge = await startBridge();
+  const posted = [];
+  let provider = "qoder";
+  let selected = "default";
+  const orig = bridge.server.listeners("request")[0];
+  bridge.server.removeAllListeners("request");
+  bridge.server.on("request", (req, res) => {
+    const url = new URL(req.url, "http://x");
+    const reply = (code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+    const capability = provider === "qoder"
+      ? { selected, options: ["default", "acceptEdits", "plan", "dontAsk", "auto", "bypassPermissions"], scope: "next-turn" }
+      : { selected: "always-ask", options: ["always-ask", "write", "yolo"], scope: "new-session" };
+    if (req.method === "GET" && url.pathname === "/sessions/s1") {
+      return reply(200, { id: "s1", provider, busy: false, updated: 1, revision: 1, pending: 0, interactions: [], messages: [], permission: capability });
+    }
+    if (req.method === "POST" && url.pathname === "/sessions/s1/permission") {
+      let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => {
+        posted.push(JSON.parse(b));
+        selected = JSON.parse(b).mode;
+        reply(200, { ok: true, permission: { ...capability, selected } });
+      });
+      return;
+    }
+    orig(req, res);
+  });
+  const backend = createPerchBackend({ hostKey: "dev", client: clientFor(bridge) });
+  const sessionId = makeRemoteSessionId("dev", "s1");
+  // qoder (next-turn): the change is written and the refreshed capability returned
+  const result = await backend.invoke(IPC.invoke.sessionConfigure, [{ sessionId }, { permissionMode: "plan" }]);
+  assert.deepEqual(posted, [{ mode: "plan" }]);
+  assert.equal(result.session.remotePermission.selected, "plan");
+  // an id outside the runtime's catalog is refused before any POST
+  await assert.rejects(
+    backend.invoke(IPC.invoke.sessionConfigure, [{ sessionId }, { permissionMode: "workspace-auto" }]),
+    /not offered by this runtime/,
+  );
+  assert.equal(posted.length, 1, "invalid mode still posted");
+  // omp (new-session): refused honestly, nothing written
+  provider = "omp";
+  await assert.rejects(
+    backend.invoke(IPC.invoke.sessionConfigure, [{ sessionId }, { permissionMode: "yolo" }]),
+    /fixes the permission mode at session creation/,
+  );
+  assert.equal(posted.length, 1, "new-session runtime change reached the bridge");
+  await new Promise((r) => bridge.server.close(r));
+});

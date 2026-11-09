@@ -112,6 +112,23 @@ test("perch host over real ssh: discover, list, browse, create, prompt-route", {
     const detail = await router.route(IPC.invoke.sessionGet, [{ id: created.id }]);
     assert.equal(detail.value.session.id, created.id);
     assert.ok(Array.isArray(detail.value.session.messages));
+    // The bridge's permission capability flows through (OMP fixes it at
+    // creation; PI's "ask" mapped to always-ask).
+    assert.deepEqual(detail.value.session.remotePermission, {
+      selected: "always-ask",
+      options: ["always-ask", "write", "yolo"],
+      scope: "new-session",
+    });
+    // The per-runtime readiness probe lists every runtime the bridge serves;
+    // OMP (this environment's runtime) reports installed with models.
+    const runtimes = await boot.runtimeStatus("localhost-perch");
+    assert.equal(runtimes.length, 6, "every bridge runtime is probed");
+    const omp = runtimes.find((r) => r.provider === "omp");
+    assert.equal(omp.installed, true, "omp installed on this host");
+    assert.ok(omp.models.length > 0, "omp models discovered");
+    for (const runtime of runtimes) {
+      assert.ok(["configured", "missing", "session-handshake", "unverified"].includes(runtime.modelCheck));
+    }
     note({ endpointPort: endpoint.port, created: hostSessionId });
   } finally {
     await boot.closeAll();

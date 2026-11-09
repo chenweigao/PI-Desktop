@@ -77,9 +77,15 @@ if (models.length === 0) {
 }
 
 /* ---- create + prompt through the production path ---- */
-const created = await host.createSession({ cwd: "/tmp", title: "kimi-adapter-probe", model: models[0].id });
+// Prefer a known-good model (env KIMI_TEST_MODEL), else bailian/kimi-k3 when
+// the catalog has it, else the first entry: the first catalog model may be an
+// account-blocked provider (ppx 403 on this machine), which is an environment
+// boundary, not an adapter failure — say so explicitly when it happens.
+const preferred = process.env.KIMI_TEST_MODEL
+  ?? (models.some((m) => m.id === "bailian/kimi-k3") ? "bailian/kimi-k3" : models[0].id);
+const created = await host.createSession({ cwd: "/tmp", title: "kimi-adapter-probe", model: preferred });
 const sid = created.id;
-console.log("· session.created", sid, "model", models[0].id);
+console.log("· session.created", sid, "model", preferred);
 const marker = `kimi-${Math.random().toString(36).slice(2, 8)}`;
 await route(IPC.invoke.agentPrompt, { sessionId: remoteId(sid), content: `Reply with exactly: ${marker}. No tools.`, messageId: `opt-${marker}` });
 // Wait for the assistant reply carrying the token.

@@ -19,9 +19,12 @@ export function remoteProjectForSession(session?: SessionSummary): RemoteProject
 export async function openRemoteProjectSession(
   { get, set, runtime }: StoreAccess & { runtime: SessionRuntime },
   project: RemoteProjectTarget,
-  options?: { provider?: string; model?: string },
+  options?: { provider?: string; model?: string; permissionMode?: string },
 ): Promise<void> {
-  const scope = `remote-project:${JSON.stringify([project.hostKey, project.projectId])}`;
+  // A chosen permission mode is part of the session's identity: fixed-at-
+  // creation runtimes can never change it later, so a different choice must
+  // not be satisfied by reusing an existing empty session.
+  const scope = `remote-project:${JSON.stringify([project.hostKey, project.projectId, options?.provider ?? null, options?.permissionMode ?? null])}`;
   const pending = runtime.pendingNewSessionRequests.get(scope);
   if (pending) { await pending; return; }
   const intent = runtime.beginNavigationIntent();
@@ -34,10 +37,11 @@ export async function openRemoteProjectSession(
     ).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
     // An explicit agent/model choice is never satisfied by reusing a session
     // running a different one: picking Codex must not reopen an OMP session.
-    const explicitChoice = options?.provider ?? options?.model;
+    const explicitChoice = options?.provider ?? options?.model ?? options?.permissionMode;
     const matchesChoice = !explicitChoice || (latest
       && (options?.provider === undefined || latest.remoteAgent === options.provider)
-      && (options?.model === undefined || latest.modelId === options.model));
+      && (options?.model === undefined || latest.modelId === options.model)
+      && (options?.permissionMode === undefined || latest.remotePermission?.selected === options.permissionMode));
     if (latest && matchesChoice && sessionIsReusableEmpty(latest, {
       running: state.runningSessions[latest.id] === true,
       liveMessageCount: runtime.liveMessageCountForSession(latest.id, state),
@@ -60,7 +64,7 @@ export async function openRemoteProjectSession(
       }
     }
     const result = await api.createRemoteSession({ hostKey: project.hostKey,
-      projectId: project.projectId, mode: "agent", permissionMode: "ask",
+      projectId: project.projectId, mode: "agent", permissionMode: options?.permissionMode ?? "ask",
       ...(options?.provider ? { provider: options.provider } : {}),
       ...(options?.model ? { model: options.model } : {}) });
     const session = safeSessionSummary(result.session);
@@ -87,7 +91,7 @@ export async function openRemoteProjectSession(
 export async function openDirectRemoteSession(
   access: StoreAccess & { runtime: SessionRuntime },
   target: { hostKey: string; cwd?: string },
-  options?: { provider?: string; model?: string },
+  options?: { provider?: string; model?: string; permissionMode?: string },
 ): Promise<void> {
   const cwd = target.cwd?.trim()
     ? target.cwd.trim()
