@@ -171,6 +171,11 @@ test("perch host over real ssh: discover, list, browse, create, prompt-route", {
     const reopenedSibling = reopened.find((h) => h.hostKey === "localhost-perch-kimi");
     assert.ok(reopenedSibling, "kimi sibling persists across an app restart");
     assert.equal(reopenedSibling.label, "Renamed Perch · Kimi", "propagated rename persists");
+    // Removing the machine removes the linked Kimi channel with it.
+    await boot2.removeHost("localhost-perch");
+    const afterRemove = await boot2.list();
+    assert.ok(!afterRemove.some((h) => h.hostKey === "localhost-perch"), "primary removed");
+    assert.ok(!afterRemove.some((h) => h.hostKey === "localhost-perch-kimi"), "sibling removed with the machine");
     await boot2.closeAll();
   } finally {
     await boot.closeAll().catch(() => undefined);

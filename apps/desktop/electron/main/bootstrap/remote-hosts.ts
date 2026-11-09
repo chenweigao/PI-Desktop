@@ -1061,11 +1061,18 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       }
     },
     removeHost: (key) => serial(key, async () => {
-      await closeLive(key);
-      await tunnels.close(key);
-      await registry.remove(key);
-      actionRequired.delete(key);
-      catalog.forget(key);
+      const record = (await registry.list()).find((item) => item.hostKey === key);
+      // Removing a machine removes the Kimi channel sharing its saved
+      // connection too; the sibling is never left orphaned.
+      const sibling = record ? siblingRecordOf(await registry.list(), record) : undefined;
+      const keys = [key, ...(sibling ? [sibling.hostKey] : [])];
+      for (const each of keys) {
+        await closeLive(each);
+        await tunnels.close(each);
+        await registry.remove(each);
+        actionRequired.delete(each);
+        catalog.forget(each);
+      }
       changed();
     }),
     async listSessions() {
