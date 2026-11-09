@@ -250,18 +250,21 @@ export function createKimiBackend(options: KimiBackendOptions): RemoteBackend {
         if (!parsed) throw invalid("malformed remote approval request id");
         const hostSessionId = parseRemoteSessionId(parsed.remoteSessionId)?.hostSessionId;
         if (!hostSessionId) throw invalid("malformed remote session id");
-        // Kimi grants per request only; there is no session-scoped grant, so
-        // "allow-session" is refused rather than fabricated.
-        if (resolution.decision === "allow-session") {
-          throw capabilityUnavailable("kimi approvals are per-request; there is no session-wide allow");
-        }
+        // Kimi web ≥2.4 answers approvals at the unified interactions route;
+        // scope:"session" is the native session grant (allow-session is real,
+        // never fabricated). An older service answers 404 — surfaced as-is.
         const decision = resolution.decision === "deny" ? "rejected"
-          : resolution.decision === "allow-once" ? "approved"
+          : resolution.decision === "allow-once" || resolution.decision === "allow" ? "approved"
+          : resolution.decision === "allow-session" ? "approved"
           : null;
         if (!decision) throw invalid(`unknown permission decision "${resolution.decision}"`);
         await client.post(
-          `/api/v1/sessions/${encodeURIComponent(hostSessionId)}/approvals/${encodeURIComponent(parsed.hostApprovalId)}`,
-          { decision },
+          `/api/v1/sessions/${encodeURIComponent(hostSessionId)}/interactions/${encodeURIComponent(parsed.hostApprovalId)}`,
+          {
+            kind: "approval",
+            decision,
+            ...(resolution.decision === "allow-session" ? { scope: "session" } : {}),
+          },
         );
         return { ok: true };
       }
@@ -308,9 +311,13 @@ export function createKimiBackend(options: KimiBackendOptions): RemoteBackend {
           }
           if (Object.keys(value).length) answers[item.id] = value;
         });
+        // Unified interactions route; an all-skipped card is a dismissal.
+        const allSkipped = (resolution.answers ?? []).every((picked) => !picked || picked.length === 0);
         await client.post(
-          `/api/v1/sessions/${encodeURIComponent(hostSessionId)}/questions/${encodeURIComponent(parsed.hostApprovalId)}`,
-          { answers, method: "click" },
+          `/api/v1/sessions/${encodeURIComponent(hostSessionId)}/interactions/${encodeURIComponent(parsed.hostApprovalId)}`,
+          allSkipped
+            ? { kind: "question", dismissed: true }
+            : { kind: "question", answers, method: "click" },
         );
         return { ok: true };
       }

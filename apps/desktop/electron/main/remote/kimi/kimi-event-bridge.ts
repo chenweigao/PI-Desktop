@@ -52,8 +52,7 @@ function toPermissionRequest(remoteSessionId: string, approval: KimiApproval): T
     argsPreview: input ?? null,
     risk: "medium",
     reason: approval.action ?? "",
-    // Kimi grants per request only; the card must not offer a session scope.
-    sessionGrant: false,
+    // Kimi web ≥2.4 grants session scope natively (scope:"session").
   };
 }
 

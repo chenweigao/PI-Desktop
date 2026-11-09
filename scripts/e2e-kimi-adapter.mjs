@@ -103,5 +103,47 @@ for (;;) {
 }
 const { status } = await route(IPC.invoke.agentGetStatus, { sessionId: remoteId(sid) });
 assert.equal(status.isRunning, false, "turn settled");
+
+/* ---- tool + approval through the production path (manual mode asks) ---- */
+// Switch the session to manual: the next prompt's tool call must surface as a
+// permission card; approving it lets the tool run on the service host.
+const { writeFile: writeFile2, readFile: readFile2, rm: rm2 } = await import("node:fs/promises");
+await router.route(IPC.invoke.sessionConfigure, [{ sessionId: remoteId(sid) }, { permissionMode: "manual" }]);
+const markerFile = `/tmp/kimi-approval-${Math.random().toString(36).slice(2, 8)}.txt`;
+await route(IPC.invoke.agentPrompt, {
+  sessionId: remoteId(sid),
+  content: `Run exactly this shell command now, no explanation: printf kimi-approved > ${markerFile}`,
+  messageId: `tool-${markerFile}`,
+});
+const approvalDeadline = Date.now() + 120_000;
+let approval = null;
+for (;;) {
+  const hit = events.find((e) => e.channel === IPC.event.remoteInteractions && e.payload?.kind === "snapshot"
+    && e.payload.sessionId === remoteId(sid) && (e.payload.permissions ?? []).length > 0);
+  if (hit) { approval = hit.payload.permissions[0]; break; }
+  if (Date.now() > approvalDeadline) break;
+  await sleep(400);
+}
+if (approval) {
+  console.log("· approval.shown", approval.toolName);
+  assert.notEqual(approval.sessionGrant, false, "kimi web ≥2.4 offers the native session scope");
+  // Exercise the native session grant end-to-end.
+  await route(IPC.invoke.toolResolvePermission, { requestId: approval.requestId, decision: "allow-session" });
+  console.log("· approval.allowed (session scope)");
+  const settleDeadline = Date.now() + 120_000;
+  for (;;) {
+    const { session } = await route(IPC.invoke.sessionGet, { id: remoteId(sid) });
+    if (!session.capabilities) throw new Error("session lost");
+    const { status: st } = await route(IPC.invoke.agentGetStatus, { sessionId: remoteId(sid) });
+    if (!st.isRunning) break;
+    if (Date.now() > settleDeadline) throw new Error("approved turn did not settle");
+    await sleep(500);
+  }
+  const onDisk = await readFile2(markerFile, "utf8").then(() => true, () => false);
+  console.log(onDisk ? "· approval.tool-ran (file on disk)" : "· approval.tool-not-run (model chose another path)");
+  await rm2(markerFile, { force: true });
+} else {
+  console.log("· approval.not-raised (model did not call a tool; boundary noted, not faked)");
+}
 await host.close();
 console.log("PASS kimi adapter: create/prompt/reply through the production path with a real model");

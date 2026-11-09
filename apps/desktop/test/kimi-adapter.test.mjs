@@ -65,13 +65,21 @@ async function startKimi() {
         state.aborts++; state.busy = false; state.lastTurnReason = "aborted";
         return reply(0, { aborted: true });
       }
-      const approvalMatch = rest.match(/^\/approvals\/([^/]+)$/);
+      const approvalMatch = rest.match(/^\/interactions\/([^/]+)$/);
       if (req.method === "POST" && approvalMatch) {
-        const aid = approvalMatch[1];
-        const idx = state.pendingApprovals.findIndex((a) => a.approval_id === aid);
-        if (idx < 0) return reply(40004, null, 400);
-        state.pendingApprovals.splice(idx, 1);
-        state.approvals.push({ id: aid, decision: body.decision });
+        const iid = approvalMatch[1];
+        const ai = state.pendingApprovals.findIndex((a) => a.approval_id === iid);
+        const qi = state.pendingQuestions.findIndex((q) => q.question_id === iid);
+        if (ai < 0 && qi < 0) return reply(40004, null, 400);
+        if (body.kind === "approval" && ai >= 0) {
+          state.pendingApprovals.splice(ai, 1);
+          state.approvals.push({ id: iid, decision: body.decision, ...(body.scope ? { scope: body.scope } : {}) });
+        } else if (body.kind === "question" && qi >= 0) {
+          state.pendingQuestions.splice(qi, 1);
+          (state.questions ??= []).push({ id: iid, ...body });
+        } else {
+          return reply(40001, null, 400);
+        }
         return reply(0, { ok: true });
       }
     }
@@ -124,7 +132,7 @@ test("a lost prompt response is not resent (prompt_id dedupes a later retry)", a
   await new Promise((r) => kimi.server.close(r));
 });
 
-test("approval maps allow-once to approved and deny to rejected; allow-session is refused", async () => {
+test("approval maps decisions onto the interactions route; allow-session carries the native session scope", async () => {
   const kimi = await startKimi();
   kimi.pendingApprovals.push({ approval_id: "ap1", tool_name: "bash", action: "run" });
   const backend = createKimiBackend({ hostKey: "k", client: clientFor(kimi) });
@@ -135,13 +143,10 @@ test("approval maps allow-once to approved and deny to rejected; allow-session i
   kimi.pendingApprovals.push({ approval_id: "ap2", tool_name: "bash", action: "run" });
   await backend.invoke(IPC.invoke.toolResolvePermission, [{ requestId: makeRemoteApprovalRequestId(sessionId, "ap2"), decision: "deny" }]);
   assert.deepEqual(kimi.approvals.at(-1), { id: "ap2", decision: "rejected" });
-  // Kimi grants per request only; a session-wide allow is refused, not faked.
+  // Kimi web ≥2.4 has a native session grant: allow-session is real.
   kimi.pendingApprovals.push({ approval_id: "ap3", tool_name: "bash", action: "run" });
-  await assert.rejects(
-    backend.invoke(IPC.invoke.toolResolvePermission, [{ requestId: makeRemoteApprovalRequestId(sessionId, "ap3"), decision: "allow-session" }]),
-    /per-request|session-wide|not.*support/i,
-  );
-  assert.equal(kimi.approvals.length, 2, "no fabricated session grant reached the service");
+  await backend.invoke(IPC.invoke.toolResolvePermission, [{ requestId: makeRemoteApprovalRequestId(sessionId, "ap3"), decision: "allow-session" }]);
+  assert.deepEqual(kimi.approvals.at(-1), { id: "ap3", decision: "approved", scope: "session" });
   await new Promise((r) => kimi.server.close(r));
 });
 
@@ -222,7 +227,7 @@ test("pending questions become asks and a click answer maps labels to option ids
   kimi.server.on("request", (req, res) => {
     const url = new URL(req.url, "http://x");
     const reply = (code, data, status = 200) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify({ code, msg: code === 0 ? "success" : "error", data })); };
-    const qMatch = url.pathname.match(/^\/api\/v1\/sessions\/([^/:]+)\/questions\/([^/]+)$/);
+    const qMatch = url.pathname.match(/^\/api\/v1\/sessions\/([^/:]+)\/interactions\/([^/]+)$/);
     if (req.method === "POST" && qMatch) {
       let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { asked.push(JSON.parse(b)); reply(0, { ok: true }); });
       return;
@@ -244,7 +249,7 @@ test("pending questions become asks and a click answer maps labels to option ids
   const { makeRemoteApprovalRequestId: mk } = await import("../electron/main/remote/backend-router.ts");
   await backend.invoke(IPC.invoke.askToolResolve, [{ requestId: mk(sessionId, "q1"), answers: [["Option B"]] }]);
   assert.equal(asked.length, 1, "the answer reached the service");
-  assert.deepEqual(asked[0], { answers: { q1a: { kind: "single", option_id: "o2" } }, method: "click" });
+  assert.deepEqual(asked[0], { kind: "question", answers: { q1a: { kind: "single", option_id: "o2" } }, method: "click" });
   await new Promise((r) => kimi.server.close(r));
 });
 
@@ -295,10 +300,10 @@ test("permission mode: configure stores it, the next prompt carries permission_m
   await new Promise((r) => bridge.server.close(r));
 });
 
-test("kimi approval cards declare no session grant, so the UI never offers allow-session", async () => {
+test("kimi approval cards allow the native session scope", async () => {
   const events = [];
   const b2 = createKimiEventBridge({ hostKey: "dev", emit: (c, p) => events.push({ channel: c, payload: p }) });
   b2.applySnapshot("s1", { session: { id: "s1", busy: true }, pending_approvals: [{ approval_id: "a1", tool_name: "bash", action: "run" }], messages: { items: [] } });
   const snapshot = events.find((e) => e.payload?.kind === "snapshot");
-  assert.equal(snapshot.payload.permissions[0].sessionGrant, false);
+  assert.notEqual(snapshot.payload.permissions[0].sessionGrant, false);
 });
