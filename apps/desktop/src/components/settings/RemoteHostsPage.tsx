@@ -79,6 +79,7 @@ export function RemoteHostsPage() {
   const [editPort, setEditPort] = useState("");
   const [editIdentityFile, setEditIdentityFile] = useState("");
   const [editServicePort, setEditServicePort] = useState("");
+  const [editHost, setEditHost] = useState("");
   const alive = useRef(true);
   const refreshGeneration = useRef(0);
   const showToast = useAppStore((state) => state.showToast);
@@ -472,6 +473,7 @@ export function RemoteHostsPage() {
                   setEditPort(host.ssh?.port !== undefined ? String(host.ssh.port) : "");
                   setEditIdentityFile(host.ssh?.identityFile ?? "");
                   setEditServicePort(host.ssh?.remotePort && host.ssh.remotePort > 1 ? String(host.ssh.remotePort) : "");
+                  setEditHost(host.ssh?.host ?? "");
                   setEditing(host.hostKey);
                 }}>
                   {t("settings.remoteHosts.edit")}
@@ -505,6 +507,14 @@ export function RemoteHostsPage() {
                   </Field>
                   {host.ssh ? (
                     <>
+                      <Field label={t("settings.remoteHosts.sshHost")}>
+                        <Input
+                          value={editHost}
+                          onChange={(event) => setEditHost(event.target.value)}
+                          aria-label={t("settings.remoteHosts.sshHost")}
+                          autoComplete="off" autoCapitalize="off" spellCheck={false}
+                        />
+                      </Field>
                       <div className="settings-remote-host-form-row">
                         <Field label={t("settings.remoteHosts.sshUser")}>
                           <Input

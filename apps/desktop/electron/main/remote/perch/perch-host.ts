@@ -180,6 +180,7 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
       makeRemoteSessionId(options.hostKey, hostSessionId),
       createPerchBackend({
         hostKey: options.hostKey, client: liveClient, log,
+        sessionAllowedTools,
         listModels: () => liveClient.get("/models").then((c) => ((c as { models?: Array<{ id: string; provider: string; agent: string }> }).models ?? [])),
       }),
     );
@@ -220,17 +221,24 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
         if (snapshot.busy || (snapshot.pending ?? 0) > 0) anyBusy = true;
         lastSeenRevision.set(hostSessionId, snapshot.revision ?? session.revision);
         // Auto-approve tools this session already allowed: answer them before
-        // the bridge surfaces a card, so an allowed tool never re-asks.
+        // the bridge surfaces a card, so an allowed tool never re-asks. A failed
+        // answer is logged, not swallowed silently, and the card still surfaces
+        // (the snapshot still carries the interaction).
         const allowed = sessionAllowedTools.get(hostSessionId);
         if (allowed?.size && client) {
           for (const interaction of (snapshot as { interactions?: Array<{ id: string; method?: string; title?: string; options?: string[] }> }).interactions ?? []) {
             const toolName = interaction.title?.match(/^Allow tool:\s*([^\n]+)/)?.[1]?.trim();
             if (!toolName || !allowed.has(toolName)) continue;
-            const option = interaction.options?.find((o) => /^approve$/i.test(o)) ?? interaction.options?.[0];
-            if (interaction.method === "select" && option) {
-              await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/answer`, { id: interaction.id, value: option }).catch(() => undefined);
-            } else if (interaction.method === "confirm") {
-              await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/answer`, { id: interaction.id, allow: true }).catch(() => undefined);
+            try {
+              if (interaction.method === "select") {
+                const option = interaction.options?.find((o) => /^approve$/i.test(o));
+                if (!option) continue; // no single-use approve: leave the card
+                await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/answer`, { id: interaction.id, value: option });
+              } else if (interaction.method === "confirm") {
+                await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/answer`, { id: interaction.id, allow: true });
+              }
+            } catch (error) {
+              log("warn", "auto-approve failed; the card stays visible", { hostSessionId, id: interaction.id, error: String(error) });
             }
           }
         }

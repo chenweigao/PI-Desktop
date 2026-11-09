@@ -281,17 +281,15 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
         // A session-scoped allow remembers the tool: later requests for the
         // same tool on this session auto-approve, so the user is not asked
         // again (Qoder/OMP have no native per-session grant; the adapter owns it).
-        if (resolution.decision === "allow-session") {
-          const toolName = (target as { title?: string }).title?.match(/^Allow tool:\s*([^\n]+)/)?.[1]?.trim();
-          if (toolName) {
-            const allowed = sessionAllowedTools.get(hostSessionId) ?? new Set<string>();
-            allowed.add(toolName);
-            sessionAllowedTools.set(hostSessionId, allowed);
-          }
-        }
+        const rememberTool = resolution.decision === "allow-session"
+          ? (target as { title?: string }).title?.match(/^Allow tool:\s*([^\n]+)/)?.[1]?.trim()
+          : undefined;
         const body: Record<string, unknown> = { id: parsed.hostApprovalId };
         if (target.method === "confirm") {
-          body.allow = resolution.decision === "allow-once" || resolution.decision === "allow";
+          // confirm has one answer; allow-once and allow-session both approve
+          // this request. allow-session additionally remembers the tool so
+          // later identical requests auto-approve.
+          body.allow = resolution.decision === "allow-once" || resolution.decision === "allow" || resolution.decision === "allow-session";
         } else if (target.method === "select") {
           // Map the user's explicit decision onto the OMP select options by
           // exact semantics. Three separate scopes must never blur:
@@ -330,6 +328,13 @@ export function createPerchBackend(options: PerchBackendOptions): RemoteBackend 
           throw capabilityUnavailable(`approval method "${target.method}" is not supported by this UI`);
         }
         await client.post(`/sessions/${encodeURIComponent(hostSessionId)}/answer`, body);
+        // Record the grant only after the bridge accepted the answer, so a
+        // failed answer never leaves a phantom session grant behind.
+        if (rememberTool) {
+          const allowed = sessionAllowedTools.get(hostSessionId) ?? new Set<string>();
+          allowed.add(rememberTool);
+          sessionAllowedTools.set(hostSessionId, allowed);
+        }
         return { ok: true };
       }
       case IPC.invoke.plansResolve:

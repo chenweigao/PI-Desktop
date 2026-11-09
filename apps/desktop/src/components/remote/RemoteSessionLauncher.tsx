@@ -163,9 +163,6 @@ export function RemoteSessionLauncher({ onCreate, onClose }: {
             >
               <IconGlobe size={13} aria-hidden />
               <span className="sidebar-remote-launch-label">{host.label}</span>
-              {host.backend ? (
-                <span className="thread-item-source">{host.backend}</span>
-              ) : null}
             </TooltipButton>
             <TooltipButton
               type="button"

@@ -244,3 +244,29 @@ test("list surface strips device tokens even when the record is on disk", async 
   await boot.closeAll();
   await cleanup();
 });
+
+test("updateHost: a label-only rename keeps the live connection; clearing a field deletes it", async () => {
+  const { dir, cleanup } = await tmpDir();
+  const adapter = fakeAdapter();
+  const boot = createRemoteHostsBoot({
+    dataDir: dir,
+    encryption: reversibleEncryption(),
+    router: createBackendRouter(),
+    emit: () => undefined,
+    clientInfo: { name: "test", version: "0.15.0" },
+    buildAdapter: () => adapter,
+  });
+  await boot.addHost({ hostKey: "h", label: "Home", url: "wss://home", deviceToken: "device-secret" });
+  // label-only rename: the live adapter is not closed or reopened.
+  const stateBefore = adapter.state();
+  await boot.updateHost("h", { label: "Renamed" });
+  assert.equal(adapter.state(), stateBefore, "rename does not close the live connection");
+  const summaries = await boot.list();
+  assert.equal(summaries.find((item) => item.hostKey === "h")?.label, "Renamed");
+  // clearing a field actually removes it from the record
+  await boot.updateHost("h", { ssh: { user: "" } });
+  const record = (await boot.registry.list()).find((item) => item.hostKey === "h");
+  assert.equal(record?.metadata?.ssh?.user, undefined, "cleared field is gone from the record");
+  await boot.closeAll();
+  await cleanup();
+});
