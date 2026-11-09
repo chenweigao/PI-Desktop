@@ -145,7 +145,7 @@ note("turn.completed", { messages: detail.messages.length });
 const markerB = `prod-b-${Date.now()}.txt`;
 // Send the deny prompt and answer the *new* approval that appears after it.
 const denyMark = events.length;
-await route(IPC.invoke.agentPrompt, { sessionId: remoteId(sid), content: `Create a file ${markerB} with content should-not-exist.` });
+await route(IPC.invoke.agentPrompt, { sessionId: remoteId(sid), content: `You MUST call the bash tool now. Run exactly: printf should-not-exist > ${markerB}` });
 const approvalB = await openApprovalAfter(sid, denyMark);
 await route(IPC.invoke.toolResolvePermission, { requestId: approvalB.requestId, decision: "deny" });
 note("deny.sent", {});
@@ -158,7 +158,7 @@ note("deny.blocked", {});
 
 /* ============ 3. accurate cancel ============ */
 const cancelMark = events.length;
-await route(IPC.invoke.agentPrompt, { sessionId: remoteId(sid), content: "Run `sleep 8` then say done." });
+await route(IPC.invoke.agentPrompt, { sessionId: remoteId(sid), content: 'You MUST call the bash tool now. Run exactly: sleep 8' });
 // Approve the sleep so the turn is genuinely running (not stuck pre-approval).
 const cancelApproval = await openApprovalAfter(sid, cancelMark);
 await route(IPC.invoke.toolResolvePermission, { requestId: cancelApproval.requestId, decision: "allow-once" });
