@@ -42,6 +42,8 @@ window.piDesktop = { platform: "linux", channels: IPC,
       { provider: "omp", installed: true, version: "omp 18.13.1", models: [{ id: "kimi-k3", name: "kimi-k3", provider: "bailian" }], modelCheck: "configured", credentialCheck: "provider-managed" },
       { provider: "qoder", installed: true, version: "qoderclicn 1.1.58", models: [], modelCheck: "missing", credentialCheck: "missing" },
       { provider: "codex", installed: false, models: [], modelCheck: "unverified", credentialCheck: "unverified" },
+      { provider: "kimi", installed: true, models: [], modelCheck: "unverified", credentialCheck: "unverified", registered: true },
+      { provider: "claude", installed: false, models: [], modelCheck: "unverified", credentialCheck: "unverified", error: "probe timed out" },
     ] } };
     if (channel === IPC.invoke.remoteHostUpdate) {
       updates.push(JSON.parse(JSON.stringify(input)));
@@ -168,11 +170,15 @@ window.remoteHostEditProbe = async () => {
   const runtimesButton = [...document.querySelectorAll("button")].find((node) => node.textContent.trim() === label("runtimesCheck"));
   check(runtimesButton, "runtime check action missing on a connected Perch host");
   flushSync(() => runtimesButton.click());
-  await until(() => document.querySelectorAll(".settings-remote-host-runtime").length === 3, "runtime rows did not render");
+  await until(() => document.querySelectorAll(".settings-remote-host-runtime").length === 5, "runtime rows did not render");
   const runtimeText = document.querySelector(".settings-remote-host-runtimes").textContent;
   check(runtimeText.includes("omp") && runtimeText.includes("1"), "ready runtime did not show its model count: " + runtimeText);
   check(runtimeText.includes(label("runtimeNotInstalled")), "missing runtime not marked");
   check(runtimeText.includes(label("runtimeCredentialsMissing")) || runtimeText.includes(label("runtimeModelsMissing")), "unconfigured runtime not marked");
+  // A registered Kimi channel and a probe error are their own states, never
+  // flattened into "not installed" or a fake "ready".
+  check(runtimeText.includes(label("runtimeRegistered")), "registered kimi row missing");
+  check(runtimeText.includes("probe timed out"), "probe error was hidden");
 
   // 9. Persistence across a full remount: list, hydrate, unchanged values.
   flushSync(() => view.unmount());

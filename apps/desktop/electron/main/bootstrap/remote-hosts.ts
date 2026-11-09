@@ -487,6 +487,68 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
     return summaryOf(record);
   }
 
+  /** Read-only SSH probe: the Perch service script can serve Kimi on demand;
+   * an existing token means it is already running. Never starts anything. */
+  async function kimiServiceAvailable(record: RemoteHostRecord): Promise<boolean> {
+    const ssh = sshMetadataOf(record);
+    if (!ssh) return false;
+    const transport = createSystemSshTransport({
+      host: ssh.host,
+      ...(ssh.port !== undefined ? { port: ssh.port } : {}),
+      ...(ssh.user ? { user: ssh.user } : {}),
+      ...(ssh.identityFile ? { identityFile: ssh.identityFile } : {}),
+      ...(record.sshSecret ? { password: record.sshSecret } : {}),
+    });
+    try {
+      const probe = await transport.exec(
+        'if [ -f "$HOME/.local/share/agent-workbench/native/local-agent-service.py" ] || [ -f "$HOME/.kimi-code/server.token" ]; then echo kimi-available; fi',
+        { timeoutMs: 15_000 },
+      );
+      return probe.stdout.includes("kimi-available");
+    } catch (error) {
+      log("info", "kimi sibling probe failed; skipping", { hostKey: record.hostKey, error: String(error) });
+      return false;
+    }
+  }
+
+  /** The Kimi sibling of a Perch record, or the Perch parent of a sibling. */
+  function siblingRecordOf(records: RemoteHostRecord[], record: RemoteHostRecord): RemoteHostRecord | undefined {
+    if (isPerchRecord(record)) {
+      return records.find((item) =>
+        item.hostKey === `${record.hostKey}-kimi` && isKimiRecord(item));
+    }
+    if (isKimiRecord(record)) {
+      const linked = record.metadata?.siblingOf;
+      if (typeof linked === "string") {
+        const found = records.find((item) => item.hostKey === linked && isPerchRecord(item));
+        if (found) return found;
+      }
+      const baseKey = record.hostKey.replace(/-kimi$/, "");
+      return records.find((item) => item.hostKey === baseKey && isPerchRecord(item));
+    }
+    return undefined;
+  }
+
+  /** Register the Kimi channel sharing one saved SSH connection. The record is
+   * stored without opening a second tunnel: it connects lazily on first use. */
+  async function registerKimiSibling(record: RemoteHostRecord, records?: RemoteHostRecord[]): Promise<RemoteHostSummary | null> {
+    const ssh = sshMetadataOf(record);
+    if (!ssh) return null;
+    const existing = siblingRecordOf(records ?? (await registry.list()), record);
+    if (existing) return summaryOf(existing);
+    const siblingKey = `${record.hostKey}-kimi`;
+    const sibling: RemoteHostRecord = {
+      ...record,
+      hostKey: siblingKey,
+      label: `${record.label} · Kimi`,
+      url: `kimi+ssh://${ssh.host}`,
+      metadata: { ...record.metadata, backend: "kimi", siblingOf: record.hostKey },
+    };
+    await registry.upsert(sibling);
+    changed();
+    return summaryOf(sibling);
+  }
+
   const ensureReady = (key: string): Promise<RemoteHostSummary> => {
     const pending = readiness.get(key);
     if (pending) return pending;
@@ -634,7 +696,7 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       // Probe every runtime the bridge can serve; each runs CLI discovery, so
       // run them concurrently and keep a per-runtime failure as an error row
       // rather than failing the whole probe.
-      return Promise.all([...PERCH_PROVIDERS].map(async (provider) => {
+      const statuses = await Promise.all([...PERCH_PROVIDERS].map(async (provider) => {
         try {
           const status = await entry.host.setupStatus(provider);
           return {
@@ -660,6 +722,24 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
           };
         }
       }));
+      // Kimi is a separate service on the same machine, not a bridge runtime:
+      // probe it read-only and, when present, make sure the channel exists so
+      // an existing host gains Kimi without re-entering any SSH fields. Its
+      // model/credential state is unverified until the channel connects.
+      const kimiAvailable = await kimiServiceAvailable(record);
+      let kimiRegistered = siblingRecordOf(await registry.list(), record) !== undefined;
+      if (kimiAvailable && !kimiRegistered) {
+        kimiRegistered = (await registerKimiSibling(record)) !== null;
+      }
+      statuses.push({
+        provider: "kimi",
+        installed: kimiAvailable,
+        models: [],
+        modelCheck: "unverified",
+        credentialCheck: "unverified",
+        ...(kimiRegistered ? { registered: true } : {}),
+      });
+      return statuses;
     },
     async browseProjects(hostKey, path) {
       await ensureReady(hostKey);
@@ -852,36 +932,8 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       const records = await registry.list();
       const record = records.find((item) => item.hostKey === hostKey);
       if (!record || !isPerchRecord(record)) return null;
-      const ssh = sshMetadataOf(record);
-      if (!ssh) return null;
-      const siblingKey = `${hostKey}-kimi`;
-      if (records.some((item) => item.hostKey === siblingKey)) return null;
-      const transport = createSystemSshTransport({
-        host: ssh.host,
-        ...(ssh.port !== undefined ? { port: ssh.port } : {}),
-        ...(ssh.user ? { user: ssh.user } : {}),
-        ...(ssh.identityFile ? { identityFile: ssh.identityFile } : {}),
-        ...(record.sshSecret ? { password: record.sshSecret } : {}),
-      });
-      try {
-        // Read-only availability probe: the Perch service script can serve
-        // Kimi on demand; an existing token means it is already running.
-        const probe = await transport.exec(
-          'if [ -f "$HOME/.local/share/agent-workbench/native/local-agent-service.py" ] || [ -f "$HOME/.kimi-code/server.token" ]; then echo kimi-available; fi',
-          { timeoutMs: 15_000 },
-        );
-        if (!probe.stdout.includes("kimi-available")) return null;
-      } catch (error) {
-        log("info", "kimi sibling probe failed; skipping", { hostKey, error: String(error) });
-        return null;
-      }
-      return addRecord({
-        ...record,
-        hostKey: siblingKey,
-        label: `${record.label} · Kimi`,
-        url: `kimi+ssh://${ssh.host}`,
-        metadata: { ...record.metadata, backend: "kimi" },
-      });
+      if (!(await kimiServiceAvailable(record))) return null;
+      return registerKimiSibling(record, records);
     },
     reconnectHost: (key) => serial(key, async () => {
       const record = (await registry.list()).find((item) => item.hostKey === key);
@@ -918,6 +970,41 @@ export function createRemoteHostsBoot(options: BootRemoteHostsOptions): RemoteHo
       };
       if (patch.sshSecret === null) delete next.sshSecret;
       await registry.upsert(next);
+      // The Kimi sibling shares this machine's saved SSH connection: edits to
+      // the target/user/key follow it (and vice versa), except `remotePort`,
+      // which is each backend's own service port. A rename follows while the
+      // sibling still carries the derived "<label> · Kimi" name.
+      const sibling = siblingRecordOf(await registry.list(), record);
+      if (sibling && (patch.ssh !== undefined || patch.sshSecret !== undefined || patch.label)) {
+        const siblingSsh: Record<string, unknown> = { ...((sibling.metadata?.ssh ?? {}) as Record<string, unknown>) };
+        for (const [field, value] of Object.entries(patchSsh)) {
+          if (field === "remotePort") continue;
+          if (value === null || value === "") delete siblingSsh[field];
+          else siblingSsh[field] = value;
+        }
+        const siblingNext: RemoteHostRecord = {
+          ...sibling,
+          ...(patch.label && sibling.label === `${record.label} · Kimi` ? { label: `${patch.label} · Kimi` } : {}),
+          ...(patch.sshSecret === null ? {} : patch.sshSecret !== undefined ? { sshSecret: patch.sshSecret } : {}),
+          metadata: { ...sibling.metadata, ssh: siblingSsh },
+        };
+        if (patch.sshSecret === null) delete siblingNext.sshSecret;
+        await registry.upsert(siblingNext);
+        const siblingConnectionChanged = patch.sshSecret !== undefined
+          || Object.keys(patchSsh).some((field) => field !== "remotePort");
+        if (siblingConnectionChanged) {
+          // A sibling that was never opened has nothing to close; a reconnect
+          // failure here must not fail the primary edit (the row stays
+          // disconnected and reconnects on demand).
+          await closeLive(sibling.hostKey);
+          await tunnels.close(sibling.hostKey);
+          try { await openHost(siblingNext); }
+          catch (error) {
+            if (requiresUserAction(error)) actionRequired.add(sibling.hostKey);
+            log("warn", "kimi sibling reconnect after a connection edit failed", { error: String(error) });
+          }
+        }
+      }
       // A label-only rename never drops the live connection; connection-affecting
       // fields (SSH target/credentials) close and reopen.
       const connectionChanged = patch.ssh !== undefined || patch.sshSecret !== undefined;

@@ -1522,6 +1522,8 @@ sklm: {
       runtimeModelsMissing: "未設定模型",
       runtimeCredentialsMissing: "需要登入",
       runtimeSdkMissing: "缺少 Agent SDK",
+      runtimeRegistered: "已登記",
+      runtimeUnverified: "未驗證",
       kimiSiblingAdded: "這台機器上也有 Kimi Code CLI 服務——已一併新增為 {{label}}。",
       sshAuthMode: "認證",
       sshAuthKey: "金鑰",

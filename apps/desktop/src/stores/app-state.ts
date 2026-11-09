@@ -237,6 +237,8 @@ export type AppState = {
     remoteProvider?: string;
     /** Perch: the model to run; must exist in the host's catalog. */
     remoteModel?: string;
+    /** Perch/Kimi: the runtime's own permission option id, chosen at creation. */
+    remotePermissionMode?: string;
     /** Create an isolated session in its own git worktree (ADR 0329). */
     isolated?: boolean;
   }) => Promise<void>;
@@ -253,7 +255,7 @@ export type AppState = {
     /** Perch: the model to run; must exist in the host's catalog. */
     remoteModel?: string;
     /** Perch/Kimi: the runtime's own permission option id, chosen at creation. */
-    remotePermissionMode?: string;
+    permissionMode?: string;
   }) => Promise<void>;
   forkSession: (id: string) => Promise<void>;
   forkAssistantMessage: (messageId: string) => Promise<void>;

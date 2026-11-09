@@ -12,9 +12,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createRequire } from "node:module";
+import { createRequire, register } from "node:module";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const here = dirname(fileURLToPath(import.meta.url));
+// The kimi host-level regression below imports main-process TypeScript
+// directly; the hook resolves its bundler-style specifiers.
+register(pathToFileURL(join(here, "helpers/ts-import-hooks.mjs")));
+const root = resolve(here, "../../..");
 const require = createRequire(join(root, "packages/agent-runtime/package.json"));
 const { build } = require("esbuild");
 const temp = await mkdtemp(join(process.env.PI_SCRATCH_DIR || tmpdir(), "remote-direct-"));
@@ -235,4 +239,106 @@ test("launcher panel opens in a loading state and never renders a scope key", as
   assert.match(html, /sidebar-remote-launch/);
   assert.match(html, /role="status"/, "hosts load announces itself");
   assert.doesNotMatch(html, /remote-project:/);
+});
+test("review: launcher permission must reach the create IPC", async () => {
+  initialize();
+  const calls = bridge((channel,input) => {
+    if(channel === IPC.invoke.remoteHostCreateSession) return {session: createdSession(input.hostKey,input.projectId)};
+    return defaultRead(channel);
+  });
+  // Exact request shape emitted by RemoteSessionLauncher, forwarded unchanged by Sidebar.
+  await useAppStore.getState().createRemoteSession({hostKey:"perch-a",cwd:"/acceptance",remoteProvider:"omp",permissionMode:"write"});
+  const request=calls.find(call=>call.channel===IPC.invoke.remoteHostCreateSession).input;
+  console.log("REVIEW_PERMISSION_PAYLOAD", JSON.stringify(request));
+  assert.equal(request.permissionMode,"write","selected launcher permission was lost before IPC");
+});
+
+test("review: catalog refresh must retain active remote permission", async () => {
+  initialize();
+  const listed=createdSession("perch-a","/acceptance");
+  const permission={selected:"write",options:["always-ask","write","yolo"],scope:"new-session"};
+  useAppStore.setState({sessions:[{...listed,remotePermission:permission}],activeSessionId:listed.id});
+  // Both production host.summaries() currently omit remotePermission.
+  bridge(channel=>channel===IPC.invoke.sessionList?{sessions:[listed],runningSessionIds:[]}:defaultRead(channel));
+  await useAppStore.getState().refreshSessions();
+  assert.deepEqual(useAppStore.getState().sessions.find(s=>s.id===listed.id).remotePermission,permission,"catalog refresh removed the permission capability");
+});
+
+test("review: project-based creation carries the chosen permission mode to the IPC", async () => {
+  initialize();
+  const calls = bridge((channel, input) => {
+    if (channel === IPC.invoke.remoteHostCreateSession) return { session: createdSession(input.hostKey, input.projectId) };
+    return defaultRead(channel);
+  });
+  await useAppStore.getState().newSession({
+    remoteProject: { hostKey: "perch-a", projectId: "/acceptance", label: "acceptance" },
+    remoteProvider: "omp", remotePermissionMode: "yolo",
+  });
+  const request = calls.find((call) => call.channel === IPC.invoke.remoteHostCreateSession).input;
+  assert.equal(request.permissionMode, "yolo", "project-flow permission was lost before IPC");
+  assert.equal(request.provider, "omp");
+});
+
+test("review: kimi host summaries carry the permission capability, pending next-message choice wins", async () => {
+  const { createKimiHost } = await import("../electron/main/remote/kimi/kimi-host.ts");
+  const { createKimiClient } = await import("../electron/main/remote/kimi/kimi-client.ts");
+  const { createServer } = await import("node:http");
+  const { once } = await import("node:events");
+  const prompts = [];
+  // The fake persists created sessions, like the real service does: a list
+  // right after a create must already contain the new row.
+  const store = new Map([["k1", { id: "k1", title: "k1", agent_config: { permission_mode: "manual" }, metadata: { cwd: "/srv" } }]]);
+  const server = createServer(async (req, res) => {
+    const reply = (code, data, status = 200) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify({ code, msg: "ok", data })); };
+    const url = new URL(req.url, "http://x");
+    const body = req.method === "POST" ? JSON.parse(await new Promise((r) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => r(b || "{}")); })) : {};
+    if (url.pathname === "/api/v1/sessions" && req.method === "GET") return reply(0, { items: [...store.values()], has_more: false });
+    if (url.pathname === "/api/v1/sessions" && req.method === "POST") {
+      const created = { id: "k2", title: body.title ?? "k", agent_config: {}, metadata: { cwd: body.metadata?.cwd } };
+      store.set("k2", created);
+      return reply(0, created);
+    }
+    const m = url.pathname.match(/^\/api\/v1\/sessions\/([^/:]+)(.*)$/);
+    if (m && req.method === "GET" && m[2] === "") return reply(0, { ...(store.get(m[1]) ?? { id: m[1], title: "k", metadata: { cwd: "/srv" } }), busy: false });
+    if (m && req.method === "GET" && m[2] === "/snapshot") return reply(0, { as_of_seq: 1, epoch: "e1", session: { id: m[1], busy: false, agent_config: {}, metadata: { cwd: "/srv" } }, messages: { items: [], has_more: false }, pending_approvals: [], pending_questions: [] });
+    if (m && req.method === "POST" && m[2] === "/prompts") { prompts.push(body); return reply(0, { prompt_id: body.prompt_id, status: "running" }); }
+    return reply(40404, null, 404);
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const port = server.address().port;
+  const { createBackendRouter, makeRemoteSessionId } = await import("../electron/main/remote/backend-router.ts");
+  const router = createBackendRouter();
+  const host = createKimiHost({
+    hostKey: "kimi-t", label: "Kimi T", router,
+    ssh: { host: "127.0.0.1", remotePort: port },
+    discoverEndpoint: async () => ({ port, token: "t" }),
+    // No SSH in this test: the tunnel forward maps straight onto the fake
+    // in-process service port, exactly the shape the production tunnel yields.
+    buildTransport: () => ({
+      exec: async () => ({ stdout: "", stderr: "", code: 0 }),
+      execWithInput: async () => ({ stdout: "", stderr: "", code: 0 }),
+      forward: async () => ({ localPort: port, close: async () => {} }),
+      dispose: () => {},
+    }),
+    emit: () => undefined, log: () => undefined,
+  });
+  try {
+    await host.connect();
+    await host.sessions();
+    const created = await host.createSession({ cwd: "/srv", title: "t", permissionMode: "yolo" });
+    // List rows carry the capability; a pending next-message choice overrides
+    // the service's last-applied value instead of vanishing on refresh.
+    const listed = host.summaries().find((s) => s.id.endsWith(":k1"));
+    assert.deepEqual(listed.remotePermission, { selected: "manual", options: ["manual", "yolo", "auto"], scope: "next-message" });
+    const createdRow = host.summaries().find((s) => s.id.endsWith(":k2"));
+    assert.equal(createdRow.remotePermission.selected, "yolo", "creation-time choice survives on the list row");
+    assert.equal(created.id, "k2");
+    const promptResult = await router.route(IPC.invoke.agentPrompt, [{ sessionId: makeRemoteSessionId("kimi-t", "k2"), content: "hi", messageId: "m1" }]);
+    assert.equal(prompts.at(-1).permission_mode, "yolo", "next prompt carries the chosen mode");
+    assert.equal(promptResult.remote, true);
+  } finally {
+    await host.close();
+    server.close();
+  }
 });

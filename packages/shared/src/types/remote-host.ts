@@ -192,6 +192,8 @@ export type RemoteRuntimeStatus = {
   credentialCheck: string;
   sdkInstalled?: boolean;
   nodeInstalled?: boolean;
+  /** Kimi row only: the sibling channel is registered under this host. */
+  registered?: boolean;
   error?: string;
 };
 export type RemoteHostReconnectRequest = { hostKey: string };

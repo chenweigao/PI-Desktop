@@ -1532,6 +1532,8 @@ sklm: {
       runtimeModelsMissing: "Yapılandırılmış model yok",
       runtimeCredentialsMissing: "Oturum açma gerekli",
       runtimeSdkMissing: "Aracı SDK eksik",
+      runtimeRegistered: "Kayıtlı",
+      runtimeUnverified: "Henüz doğrulanmadı",
       kimiSiblingAdded: "Bu makinede Kimi Code CLI da kullanılabilir — {{label}} olarak eklendi.",
       sshAuthMode: "Kimlik doğrulama",
       sshAuthKey: "Anahtar",

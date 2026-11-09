@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { SessionSummary } from "@pi-desktop/shared";
+import { REMOTE_AGENT_PERMISSION_CATALOG } from "@pi-desktop/shared";
 import type { SidebarRemoteGroup } from "../../lib/sidebar-project-model";
 import { normalizeProjectPath } from "../../lib/sidebar-session-groups";
 import {
@@ -55,6 +56,9 @@ export function RemoteProjectGroups({ groups, renderSessions }: {
   const [busy, setBusy] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [agentPicker, setAgentPicker] = useState<string | null>(null);
+  // Second step after an agent pick: creation-fixed runtimes (OMP/Codex) must
+  // choose a permission mode now — it cannot be changed on the session later.
+  const [permissionPicker, setPermissionPicker] = useState<{ projectKey: string; agent: string } | null>(null);
   const settings = useAppStore((state) => state.settings);
   // Remote groups carry the same running affordances as local projects, so a
   // collapsed host group does not hide live work either.
@@ -65,14 +69,16 @@ export function RemoteProjectGroups({ groups, renderSessions }: {
   const setProjectCollapsed = useAppStore((state) => state.setProjectCollapsed);
   const remoteModelCatalogs = useAppStore((state) => state.remoteModelCatalogs);
   const loadRemoteModelCatalog = useAppStore((state) => state.loadRemoteModelCatalog);
-  const createSession = async (project: SidebarRemoteGroup["project"], agent?: string) => {
+  const createSession = async (project: SidebarRemoteGroup["project"], agent?: string, permissionMode?: string) => {
     if (busy || !project.connected) return;
     setBusy(project.key);
     setAgentPicker(null);
+    setPermissionPicker(null);
     try {
       await useAppStore.getState().newSession({
         remoteProject: project,
         ...(agent ? { remoteProvider: agent } : {}),
+        ...(permissionMode ? { remotePermissionMode: permissionMode } : {}),
       });
     } catch (error) {
       useAppStore.getState().showToast(
@@ -112,9 +118,17 @@ export function RemoteProjectGroups({ groups, renderSessions }: {
     if (agentsAvailable(catalog) && agents.length > 1) {
       setAgentPicker(agentPicker === project.key ? null : project.key);
     } else if (agentsAvailable(catalog) && agents.length === 1) {
-      void createSession(project, agents[0]);
+      pickAgent(project, agents[0]);
     } else {
       void createSession(project);
+    }
+  };
+  const pickAgent = (project: SidebarRemoteGroup["project"], agent: string) => {
+    const catalog = REMOTE_AGENT_PERMISSION_CATALOG[agent];
+    if (catalog && catalog.options.length > 1) {
+      setPermissionPicker({ projectKey: project.key, agent });
+    } else {
+      void createSession(project, agent);
     }
   };
   return <>{groups.map(({ project, sessions }) => {
@@ -199,9 +213,30 @@ export function RemoteProjectGroups({ groups, renderSessions }: {
               type="button"
               className="sidebar-remote-agent-option"
               disabled={busy !== null}
-              onClick={() => void createSession(project, agent)}
+              aria-expanded={permissionPicker?.projectKey === project.key && permissionPicker.agent === agent}
+              onClick={() => pickAgent(project, agent)}
             >
               {agent}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {permissionPicker?.projectKey === project.key ? (
+        <div className="sidebar-remote-agent-picker" role="group" aria-label={t("chat.permissionMode")}>
+          {(REMOTE_AGENT_PERMISSION_CATALOG[permissionPicker.agent]?.options ?? []).map((option) => (
+            <button
+              key={option}
+              type="button"
+              className="sidebar-remote-agent-option"
+              disabled={busy !== null}
+              onClick={() => void createSession(project, permissionPicker.agent, option)}
+            >
+              {t(`chat.remotePermissionOption.${permissionPicker.agent}.${option}`, {
+                defaultValue: t(`chat.remotePermissionOption.${option}`, { defaultValue: option }),
+              })}
+              {option === REMOTE_AGENT_PERMISSION_CATALOG[permissionPicker.agent]?.default
+                ? ` (${t("remote:permissionDefault")})`
+                : ""}
             </button>
           ))}
         </div>

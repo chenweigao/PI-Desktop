@@ -1617,6 +1617,7 @@ export function Sidebar({
     hostKey: string;
     cwd?: string;
     remoteProvider?: string;
+    permissionMode?: string;
   }) => {
     try {
       await createRemoteSession(options);

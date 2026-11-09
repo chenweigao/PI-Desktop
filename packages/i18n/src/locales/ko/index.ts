@@ -1538,6 +1538,8 @@ sklm: {
       runtimeModelsMissing: "구성된 모델 없음",
       runtimeCredentialsMissing: "로그인 필요",
       runtimeSdkMissing: "에이전트 SDK 없음",
+      runtimeRegistered: "등록됨",
+      runtimeUnverified: "아직 확인되지 않음",
       kimiSiblingAdded: "이 머신에서 Kimi Code CLI도 사용할 수 있습니다 — {{label}}(으)로 추가했습니다.",
       sshAuthMode: "인증",
       sshAuthKey: "키",

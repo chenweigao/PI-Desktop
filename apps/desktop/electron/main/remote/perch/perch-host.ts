@@ -27,7 +27,7 @@ import {
   type PerchClient, type PerchEndpoint,
 } from "./perch-client.js";
 import { createPerchEventBridge, type PerchEventBridge } from "./perch-event-bridge.js";
-import { createPerchBackend } from "./perch-session-backend.js";
+import { createPerchBackend, remotePermissionOf } from "./perch-session-backend.js";
 import type { PerchSessionSummary } from "./perch-client.js";
 
 export type PerchHostOptions = {
@@ -319,6 +319,9 @@ export function createPerchHost(options: PerchHostOptions): PerchHost {
         remoteAgent: session.provider,
         mode: "agent",
         permissionMode: "ask",
+        // The authoritative permission capability on list rows too, so a
+        // session-list refresh never erases what sessionGet supplied.
+        ...(remotePermissionOf(session) ? { remotePermission: remotePermissionOf(session) } : {}),
         thinkingLevel: "off",
         // The real remote model so the composer shows it (e.g. kimi-k3), not a
         // generic placeholder.

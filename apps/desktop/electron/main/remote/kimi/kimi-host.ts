@@ -22,7 +22,7 @@ import {
   type KimiClient, type KimiEndpoint, type KimiSession, type KimiSnapshot,
 } from "./kimi-client.js";
 import { createKimiEventBridge, type KimiEventBridge } from "./kimi-event-bridge.js";
-import { createKimiBackend } from "./kimi-session-backend.js";
+import { createKimiBackend, kimiPermissionCapability } from "./kimi-session-backend.js";
 
 export type KimiHostOptions = {
   hostKey: string;
@@ -243,6 +243,10 @@ export function createKimiHost(options: KimiHostOptions): KimiHost {
         remoteAgent: "kimi",
         mode: "agent",
         permissionMode: "ask",
+        // Pending next-message choice wins over the last applied one.
+        remotePermission: kimiPermissionCapability(
+          sessionPermissions.get(session.id) ?? session.agent_config?.permission_mode,
+        ),
         thinkingLevel: "off",
         ...(session.agent_config?.model ? { modelId: session.agent_config.model } : {}),
         messageCount: 0,

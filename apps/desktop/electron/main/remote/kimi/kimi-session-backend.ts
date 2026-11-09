@@ -59,7 +59,9 @@ const HANDLED_CHANNELS: ReadonlySet<string> = new Set([
 /** Kimi's permission contract: manual/yolo/auto, applied to the next prompt. */
 const KIMI_PERMISSION_MODES = ["manual", "yolo", "auto"] as const;
 
-function kimiPermissionCapability(selected: string | null | undefined): RemotePermissionCapability {
+/** Shared by the session backend and the host inventory so list rows, detail
+ * reads and configure answers never disagree about the capability. */
+export function kimiPermissionCapability(selected: string | null | undefined): RemotePermissionCapability {
   return {
     selected: selected && (KIMI_PERMISSION_MODES as readonly string[]).includes(selected) ? selected : "manual",
     options: [...KIMI_PERMISSION_MODES],

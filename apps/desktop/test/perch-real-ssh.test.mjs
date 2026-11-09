@@ -119,19 +119,61 @@ test("perch host over real ssh: discover, list, browse, create, prompt-route", {
       options: ["always-ask", "write", "yolo"],
       scope: "new-session",
     });
-    // The per-runtime readiness probe lists every runtime the bridge serves;
-    // OMP (this environment's runtime) reports installed with models.
+    // The per-runtime readiness probe lists every runtime the bridge serves,
+    // plus the Kimi service sharing this machine (this host has one running).
     const runtimes = await boot.runtimeStatus("localhost-perch");
-    assert.equal(runtimes.length, 6, "every bridge runtime is probed");
+    assert.equal(runtimes.length, 7, "six bridge runtimes plus the kimi sibling probe");
     const omp = runtimes.find((r) => r.provider === "omp");
     assert.equal(omp.installed, true, "omp installed on this host");
     assert.ok(omp.models.length > 0, "omp models discovered");
     for (const runtime of runtimes) {
       assert.ok(["configured", "missing", "session-handshake", "unverified"].includes(runtime.modelCheck));
     }
+    const kimiRow = runtimes.find((r) => r.provider === "kimi");
+    assert.equal(kimiRow.installed, true, "kimi service detected on the same host");
+
+    // Detection registered the Kimi channel under the same saved connection —
+    // an existing host gains it without re-entering any SSH field.
+    const afterProbe = await boot.list();
+    const sibling = afterProbe.find((h) => h.hostKey === "localhost-perch-kimi");
+    assert.ok(sibling, "kimi sibling registered by the runtime probe");
+    assert.equal(sibling.backend, "kimi");
+    assert.equal(sibling.ssh.host, "localhost");
+
+    // Connection edits to the primary follow the sibling (one machine, one
+    // configuration); a derived sibling name follows a rename.
+    await boot.updateHost("localhost-perch", { label: "Renamed Perch" });
+    let rows = await boot.list();
+    assert.equal(rows.find((h) => h.hostKey === "localhost-perch-kimi").label, "Renamed Perch · Kimi");
+    // A valid connection field follows the link (the current user keeps SSH
+    // working; an invalid one would surface the edit's own error instead).
+    const me = process.env.USER || "root";
+    await boot.updateHost("localhost-perch", { ssh: { user: me } });
+    rows = await boot.list();
+    assert.equal(rows.find((h) => h.hostKey === "localhost-perch-kimi").ssh.user, me);
+    // The sibling's own service port never leaks across the link.
+    assert.equal(rows.find((h) => h.hostKey === "localhost-perch-kimi").ssh.remotePort ?? 1, 1);
+    // And edits in the reverse direction reach the parent (clearing the user
+    // field on the sibling clears it on the parent too).
+    await boot.updateHost("localhost-perch-kimi", { ssh: { user: "" } });
+    rows = await boot.list();
+    assert.equal(rows.find((h) => h.hostKey === "localhost-perch").ssh.user, undefined);
     note({ endpointPort: endpoint.port, created: hostSessionId });
-  } finally {
+    // A fresh boot over the same dataDir (an app restart) keeps the sibling.
     await boot.closeAll();
+    const boot2 = createRemoteHostsBoot({
+      dataDir, encryption: reversibleEncryption(), router,
+      clientInfo: { name: "perch-ssh-test", version: "0.0.0" },
+      emit: () => undefined,
+      log: () => undefined,
+    });
+    const reopened = await boot2.list();
+    const reopenedSibling = reopened.find((h) => h.hostKey === "localhost-perch-kimi");
+    assert.ok(reopenedSibling, "kimi sibling persists across an app restart");
+    assert.equal(reopenedSibling.label, "Renamed Perch · Kimi", "propagated rename persists");
+    await boot2.closeAll();
+  } finally {
+    await boot.closeAll().catch(() => undefined);
     await rm(dataDir, { recursive: true, force: true });
   }
 });

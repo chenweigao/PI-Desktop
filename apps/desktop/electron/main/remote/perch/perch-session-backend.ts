@@ -45,8 +45,9 @@ function invalid(message: string): Error {
 
 const PERMISSION_SCOPES: ReadonlySet<string> = new Set(["next-message", "next-turn", "new-session", "runtime-managed"]);
 
-/** The bridge's permission capability, defaulted defensively. */
-function remotePermissionOf(summary: PerchSessionSummary): RemotePermissionCapability | undefined {
+/** The bridge's permission capability, defaulted defensively. Shared by the
+ * session backend (detail/configure) and the host inventory (list rows). */
+export function remotePermissionOf(summary: PerchSessionSummary): RemotePermissionCapability | undefined {
   const capability = summary.permission;
   if (!capability) return undefined;
   const scope = (PERMISSION_SCOPES.has(capability.scope ?? "") ? capability.scope : "new-session") as RemotePermissionScope;

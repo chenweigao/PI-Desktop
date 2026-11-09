@@ -83,7 +83,11 @@ if (models.length === 0) {
 // boundary, not an adapter failure — say so explicitly when it happens.
 const preferred = process.env.KIMI_TEST_MODEL
   ?? (models.some((m) => m.id === "bailian/kimi-k3") ? "bailian/kimi-k3" : models[0].id);
-const created = await host.createSession({ cwd: "/tmp", title: "kimi-adapter-probe", model: preferred });
+const created = await host.createSession({ cwd: "/tmp", title: "kimi-adapter-probe", model: preferred, permissionMode: "yolo" });
+// The creation-time permission choice is on the session row immediately.
+const row = host.summaries().find((s) => s.id.endsWith(created.id));
+assert.equal(row?.remotePermission?.selected, "yolo", "creation permission on the list row");
+console.log("· permission.creation", JSON.stringify(row.remotePermission));
 const sid = created.id;
 console.log("· session.created", sid, "model", preferred);
 const marker = `kimi-${Math.random().toString(36).slice(2, 8)}`;

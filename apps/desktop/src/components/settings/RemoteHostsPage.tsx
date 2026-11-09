@@ -645,22 +645,30 @@ export function RemoteHostsPage() {
               {runtimes[host.hostKey] ? (
                 <ul className="settings-remote-host-runtimes" aria-label={t("settings.remoteHosts.runtimesCheck")}>
                   {runtimes[host.hostKey].map((runtime) => {
-                    const status = !runtime.installed
-                      ? t("settings.remoteHosts.runtimeNotInstalled")
-                      : runtime.error
-                        ? runtime.error
-                        : runtime.sdkInstalled === false || runtime.nodeInstalled === false
-                          ? t("settings.remoteHosts.runtimeSdkMissing")
-                          : runtime.credentialCheck === "missing"
-                            ? t("settings.remoteHosts.runtimeCredentialsMissing")
-                            : runtime.modelCheck === "missing"
-                              ? t("settings.remoteHosts.runtimeModelsMissing")
-                              : t("settings.remoteHosts.runtimeReady", { count: runtime.models.length });
-                    const ready = runtime.installed && !runtime.error && runtime.credentialCheck !== "missing" && runtime.modelCheck !== "missing";
+                    // Probe errors and unverified checks are their own states —
+                    // never flatten them into "not installed" or "ready".
+                    const status = runtime.error
+                      ? runtime.error
+                      : runtime.registered
+                        ? t("settings.remoteHosts.runtimeRegistered")
+                        : !runtime.installed
+                          ? t("settings.remoteHosts.runtimeNotInstalled")
+                          : runtime.sdkInstalled === false || runtime.nodeInstalled === false
+                            ? t("settings.remoteHosts.runtimeSdkMissing")
+                            : runtime.credentialCheck === "missing"
+                              ? t("settings.remoteHosts.runtimeCredentialsMissing")
+                              : runtime.modelCheck === "missing"
+                                ? t("settings.remoteHosts.runtimeModelsMissing")
+                                : runtime.modelCheck === "unverified" || runtime.credentialCheck === "unverified"
+                                  ? t("settings.remoteHosts.runtimeUnverified")
+                                  : t("settings.remoteHosts.runtimeReady", { count: runtime.models.length });
+                    const ready = runtime.installed && !runtime.error && runtime.credentialCheck !== "missing"
+                      && runtime.modelCheck !== "missing" && runtime.modelCheck !== "unverified"
+                      && runtime.credentialCheck !== "unverified";
                     return (
                       <li key={runtime.provider} className="settings-remote-host-runtime">
                         <span className="settings-remote-host-runtime-name">{runtime.provider}</span>
-                        <Badge tone={ready ? "success" : runtime.installed ? "warning" : "neutral"}>{status}</Badge>
+                        <Badge tone={runtime.error ? "error" : ready || runtime.registered ? "success" : runtime.installed ? "warning" : "neutral"}>{status}</Badge>
                       </li>
                     );
                   })}

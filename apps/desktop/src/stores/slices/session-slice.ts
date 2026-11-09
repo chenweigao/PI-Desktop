@@ -175,7 +175,19 @@ export function createSessionSlice({
   const refreshSessionList = createRefreshCoordinator(async () => {
     const result = await api.listSessions();
     set((state) => {
-      const next = result.sessions.map(safeSessionSummary);
+      const previousById = new Map(state.sessions.map((session) => [session.id, session]));
+      const next = result.sessions.map((session) => {
+        const safe = safeSessionSummary(session);
+        // A host build that predates remotePermission omits it on list rows;
+        // keep the capability the detail read already supplied instead of
+        // degrading the composer mid-session. Hosts on this release always
+        // send the authoritative value, so nothing stale survives a refresh.
+        if (safe.remotePermission === undefined) {
+          const known = previousById.get(safe.id)?.remotePermission;
+          if (known) return { ...safe, remotePermission: known };
+        }
+        return safe;
+      });
       const active = state.sessions.find((session) => session.id === state.activeSessionId);
       // A disconnected host may temporarily disappear from inventory; keep the
       // active identity fail-closed until an authoritative detail/list replaces it.
@@ -663,6 +675,7 @@ export function createSessionSlice({
       if (remoteProject) return openRemoteProjectSession({ get, set, runtime }, remoteProject, {
         ...(options?.remoteProvider ? { provider: options.remoteProvider } : {}),
         ...(options?.remoteModel ? { model: options.remoteModel } : {}),
+        ...(options?.remotePermissionMode ? { permissionMode: options.remotePermissionMode } : {}),
       });
       if (!(options && "projectPath" in options) && isRemoteSession(activeSession ?? (
         get().activeSessionId?.startsWith("remote:") ? { id: get().activeSessionId! } : undefined
@@ -742,7 +755,7 @@ export function createSessionSlice({
       }, {
         ...(options.remoteProvider ? { provider: options.remoteProvider } : {}),
         ...(options.remoteModel ? { model: options.remoteModel } : {}),
-        ...(options.remotePermissionMode ? { permissionMode: options.remotePermissionMode } : {}),
+        ...(options.permissionMode ? { permissionMode: options.permissionMode } : {}),
       });
     },
 
