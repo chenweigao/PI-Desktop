@@ -77,6 +77,16 @@ export function kimiSnapshotToUiMessages(messages: KimiMessage[], streaming: boo
     // Compaction summaries are user-role rows injected by the runtime; they are
     // not user prompts and must not render as one.
     const isCompaction = message.metadata?.origin?.kind === "compaction_summary";
+    // Runtime-injected scaffolding (date reminders, compaction continuation,
+    // elision notes…) arrives as user-role text wrapped in <system-reminder>
+    // with metadata.origin.kind "injection" (kimi web 2.4). Filter by the real
+    // protocol metadata first; the wrapper check covers older services. Real
+    // user text (origin.kind "user") always stays.
+    const origin = message.metadata?.origin;
+    const textProbe = (message.content ?? []).filter((p) => p.type === "text").map((p) => p.text ?? "").join("").trim();
+    const isInjection = origin?.kind === "injection"
+      || (message.role === "user" && /^<system-reminder>\s[\s\S]*\s<\/system-reminder>$/.test(textProbe));
+    if (isInjection) continue;
     const parts = message.content ?? [];
     const createdAt = message.created_at ?? new Date().toISOString();
     const text = parts.filter((p) => p.type === "text").map((p) => p.text ?? "").join("");

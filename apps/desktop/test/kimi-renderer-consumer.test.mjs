@@ -127,3 +127,34 @@ test("an aborted turn reports TURN_ABORTED and keeps its partial", async () => {
   const row = state.messages.find((m) => m.id === "in-flight:s1:1");
   assert.ok(row && row.status === "complete", "the partial row is kept and ended, not replaced by an older turn");
 });
+
+test("renderer store: an injected reminder never becomes a user bubble, including on multi-turn re-open", async () => {
+  const listeners = setupStore();
+  const unsubscribe = subscribeRemoteInteractions();
+  const emit = (channel, payload) => {
+    if (channel === IPC.event.agentMessage) useAppStore.getState().handleAgentEvent(payload);
+    else listeners.get(channel)?.(payload);
+  };
+  const bridge = createKimiEventBridge({ hostKey: "k", emit });
+  // Real 2.4.0 wire shape: the date reminder is a user-role injection between
+  // the user's prompt and the assistant's reply, across two turns.
+  const wire = [
+    { id: "p1", role: "user", content: [{ type: "text", text: "reply with just: ok" }], metadata: { origin: { kind: "user" } } },
+    { id: "inj1", role: "user", metadata: { origin: { kind: "injection", variant: "date_change" } },
+      content: [{ type: "text", text: "<system-reminder>\nToday's date is 2026-11-10.\n</system-reminder>" }] },
+    { id: "a1", role: "assistant", content: [{ type: "text", text: "ok" }] },
+  ];
+  bridge.applySnapshot("s1", { as_of_seq: 1, epoch: "e1", session: { id: "s1", busy: true, main_turn_active: true }, messages: kimiMessages(wire.slice(0, 1)) });
+  bridge.applySnapshot("s1", { as_of_seq: 2, epoch: "e1", session: { id: "s1", busy: false, last_turn_reason: "completed" }, messages: kimiMessages(wire) });
+  await new Promise((r) => setTimeout(r, 400));
+  let messages = useAppStore.getState().messages;
+  assert.ok(!messages.some((m) => typeof m.content === "string" && m.content.includes("system-reminder")), "reminder leaked into the live transcript");
+  assert.ok(messages.some((m) => m.id === "p1" && m.role === "user"), "the real user prompt is missing");
+  // Re-open: a fresh bridge (a cold reconnect) replays the same wire — same result.
+  const bridge2 = createKimiEventBridge({ hostKey: "k", emit });
+  bridge2.applySnapshot("s1", { as_of_seq: 3, epoch: "e1", session: { id: "s1", busy: false }, messages: kimiMessages(wire) });
+  await new Promise((r) => setTimeout(r, 400));
+  messages = useAppStore.getState().messages;
+  assert.ok(!messages.some((m) => typeof m.content === "string" && m.content.includes("system-reminder")), "reminder leaked on re-open");
+  unsubscribe();
+});

@@ -13,7 +13,7 @@ import { register } from "node:module";
 register(new URL("./helpers/ts-import-hooks.mjs", import.meta.url));
 const { createKimiClient } = await import("../electron/main/remote/kimi/kimi-client.ts");
 const { createKimiBackend } = await import("../electron/main/remote/kimi/kimi-session-backend.ts");
-const { createKimiEventBridge } = await import("../electron/main/remote/kimi/kimi-event-bridge.ts");
+const { createKimiEventBridge, kimiSnapshotToUiMessages } = await import("../electron/main/remote/kimi/kimi-event-bridge.ts");
 const { createBackendRouter, makeRemoteSessionId, makeRemoteApprovalRequestId } = await import("../electron/main/remote/backend-router.ts");
 const { IPC } = await import("@pi-desktop/shared");
 
@@ -317,4 +317,23 @@ test("an expired approval never surfaces a card", () => {
   ], messages: { items: [] } });
   const snapshot = events.find((e) => e.payload?.kind === "snapshot");
   assert.deepEqual(snapshot.payload.permissions.map((x) => x.toolName), ["write"]);
+});
+
+test("runtime-injected reminders never render as user bubbles; real user text survives (real 2.4 wire shape)", () => {
+  // Exact shape captured from kimi-code 2.4.0: date_change injection with
+  // metadata.origin.kind "injection"; the legit user prompt has kind "user".
+  const rows = kimiSnapshotToUiMessages([
+    { id: "p1", role: "user", content: [{ type: "text", text: "reply with just: ok" }], metadata: { origin: { kind: "user" } } },
+    { id: "inj1", role: "user", metadata: { origin: { kind: "injection", variant: "date_change" } },
+      content: [{ type: "text", text: "<system-reminder>\nToday's date is 2026-11-10. …\n</system-reminder>" }] },
+    { id: "a1", role: "assistant", content: [{ type: "text", text: "ok" }] },
+    // Older services may lack the metadata: the wrapper alone still filters.
+    { id: "inj2", role: "user", content: [{ type: "text", text: "<system-reminder>\nWrapped.\n</system-reminder>" }] },
+    // …but user text merely MENTIONING a reminder stays.
+    { id: "u2", role: "user", content: [{ type: "text", text: "what does <system-reminder> mean? also: tell me more" }] },
+  ], false);
+  const ids = rows.map((r) => r.id);
+  assert.deepEqual(ids, ["p1", "a1", "u2"]);
+  assert.equal(rows.find((r) => r.id === "p1").role, "user");
+  assert.equal(rows.find((r) => r.id === "u2").role, "user");
 });

@@ -176,5 +176,14 @@ if (ask) {
 } else {
   console.log("· ask.not-raised (model did not ask; boundary noted, not faked)");
 }
+/* ---- runtime scaffolding never renders: the real snapshot carries the
+ * date reminder as a user-role injection; the transcript read must drop it. */
+{
+  const { session } = await route(IPC.invoke.sessionGet, { id: remoteId(sid) });
+  const leaked = session.messages.filter((m) => typeof m.content === "string" && m.content.includes("system-reminder"));
+  assert.equal(leaked.length, 0, "a runtime-injected reminder rendered as a user bubble");
+  assert.ok(session.messages.some((m) => m.role === "user"), "the real user prompt is present");
+  console.log("· transcript.clean (no system-reminder bubbles)");
+}
 await host.close();
 console.log("PASS kimi adapter: create/prompt/reply/approval/question through the production path with a real model");
