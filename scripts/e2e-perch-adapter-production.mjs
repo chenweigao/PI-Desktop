@@ -120,6 +120,19 @@ async function openApprovalAfter(sid, mark) {
   return ev.payload.permissions[0];
 }
 
+/** Same, but nudge the model once when it answered in text instead of calling
+ * the tool (a real-model behavior flake, not an adapter fault). */
+async function openApprovalAfterWithRetry(sid, mark) {
+  try {
+    return await openApprovalAfter(sid, mark);
+  } catch (error) {
+    console.log("· approval.retry (model answered without a tool; nudging once)");
+    const retryMark = events.length;
+    await route(IPC.invoke.agentPrompt, { sessionId: remoteId(sid), content: "You answered in text. Call the bash tool NOW as instructed before." });
+    return openApprovalAfter(sid, retryMark);
+  }
+}
+
 /* ============ 1. create + prompt + transcript + select approval (allow) ============ */
 const markerA = `prod-a-${Date.now()}.txt`;
 const created = await host.createSession({ cwd: workspace, model: "kimi-k3", permissionMode: "always-ask", title: "adapter-prod-1" });
@@ -146,7 +159,7 @@ const markerB = `prod-b-${Date.now()}.txt`;
 // Send the deny prompt and answer the *new* approval that appears after it.
 const denyMark = events.length;
 await route(IPC.invoke.agentPrompt, { sessionId: remoteId(sid), content: `You MUST call the bash tool now. Run exactly: printf should-not-exist > ${markerB}` });
-const approvalB = await openApprovalAfter(sid, denyMark);
+const approvalB = await openApprovalAfterWithRetry(sid, denyMark);
 await route(IPC.invoke.toolResolvePermission, { requestId: approvalB.requestId, decision: "deny" });
 note("deny.sent", {});
 // The denied turn must end — a missing agent_end fails the test, never skipped.
@@ -157,10 +170,21 @@ assert.equal(existsB, false, "denied tool never created the file");
 note("deny.blocked", {});
 
 /* ============ 3. accurate cancel ============ */
+// The denied turn (and a possible nudge turn) must be fully idle before the
+// cancel probe, or the bridge rejects the prompt as "会话正在运行".
+await (async () => {
+  const deadline = Date.now() + 60_000;
+  for (;;) {
+    const { status } = await route(IPC.invoke.agentGetStatus, { sessionId: remoteId(sid) });
+    if (!status.isRunning) return;
+    if (Date.now() > deadline) throw new Error("session never idled before the cancel stage");
+    await sleep(500);
+  }
+})();
 const cancelMark = events.length;
 await route(IPC.invoke.agentPrompt, { sessionId: remoteId(sid), content: 'You MUST call the bash tool now. Run exactly: sleep 8' });
 // Approve the sleep so the turn is genuinely running (not stuck pre-approval).
-const cancelApproval = await openApprovalAfter(sid, cancelMark);
+const cancelApproval = await openApprovalAfterWithRetry(sid, cancelMark);
 await route(IPC.invoke.toolResolvePermission, { requestId: cancelApproval.requestId, decision: "allow-once" });
 await waitEvent((e, i) => i >= cancelMark && e.channel === IPC.event.agentMessage && e.payload?.sessionId === remoteId(sid) && e.payload?.event?.type === "agent_start", "agent_start for cancel", 90_000);
 // Give the tool a beat to start the sleep.

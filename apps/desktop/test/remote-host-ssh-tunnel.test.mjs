@@ -308,3 +308,9 @@ test("invalid readiness prevents reservation and forwarding; IPv6 readiness uses
     await manager.dispose();
   }
 });
+
+test("ssh args keep the tunnel alive long enough to notice a dead peer", () => {
+  const args = sshCommonArgs({ host: "h" });
+  assert.ok(args.includes("ServerAliveInterval=15"), "keepalive interval set");
+  assert.ok(args.includes("ServerAliveCountMax=3"), "keepalive count set");
+});

@@ -143,6 +143,13 @@ export function sshCommonArgs(target: SshTarget): string[] {
     // A forward that cannot be set up must not leave a half-open session.
     "-o",
     "ExitOnForwardFailure=yes",
+    // Detect a silently dropped peer: three missed keepalives (~45s) kill the
+    // tunnel so the poll loop's failure path (and reconnect-on-use) fires
+    // instead of wedging on a dead forward.
+    "-o",
+    "ServerAliveInterval=15",
+    "-o",
+    "ServerAliveCountMax=3",
   ];
   if (password) {
     // The helper answers every prompt with the same secret, so a retry could
