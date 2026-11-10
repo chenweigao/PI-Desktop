@@ -63,35 +63,49 @@ const button = (text) => [...document.querySelectorAll("button")].find((node) =>
 const click = async (node, message) => { check(node, message); flushSync(() => node.click()); await frame(); };
 
 window.launcherProbe = async () => {
-  // Host row renders once the inventory loads.
+  const t = (k) => i18n.t(k);
+  // Host row renders once the inventory loads; one click opens ONE form.
   await until(() => button("Dev Box"), "host row did not render");
   await click(button("Dev Box"), "host row missing");
-  // Two runtimes in the catalog → the agent picker opens (no silent default).
-  await until(() => button("omp") && button("codex"), "agent picker did not open");
-  await click(button("omp"), "omp option missing");
-  // OMP has several creation-fixed permission modes → the permission step opens.
-  await until(() => document.body.textContent.includes(i18n.t("chat.remotePermissionOption.write")), "permission step did not open");
-  const write = [...document.querySelectorAll("button")].find((node) =>
-    node.textContent.includes(i18n.t("chat.remotePermissionOption.write")));
-  await click(write, "write option missing");
+  await until(() => document.querySelector(".sidebar-remote-launch-config"), "config form did not open");
+  // Multi-runtime host: no silent default — Create stays disabled until the
+  // user picks a runtime, all in the same form.
+  const createBtn = () => [...document.querySelectorAll("button")].find((node) => node.textContent.trim() === t("remote:createRemoteSession"));
+  check(createBtn()?.disabled, "create must stay disabled until a runtime is picked on a multi-runtime host");
+  // Pick the runtime inside the same form.
+  const agentSelect = document.querySelector('.sidebar-remote-launch-config [aria-label="' + t("remote:chooseAgent") + '"]');
+  check(agentSelect, "runtime select missing");
+  await click(agentSelect, "runtime select not clickable");
+  await until(() => [...document.querySelectorAll('[role="option"]')].some((node) => node.textContent.trim() === "omp"), "runtime options missing");
+  const ompOption = [...document.querySelectorAll('[role="option"]')].find((node) => node.textContent.trim() === "omp");
+  await click(ompOption, "omp option missing");
+  // The permission select follows with OMP's own options and default marked.
+  await until(() => {
+    const perm = document.querySelector('.sidebar-remote-launch-config [aria-label="' + t("chat.permissionMode") + '"]');
+    return perm && perm.textContent.includes(t("chat.remotePermissionOption.always-ask"));
+  }, "permission select did not follow the runtime pick");
+  // Switch permission to "Allow writes".
+  const permSelect = document.querySelector('.sidebar-remote-launch-config [aria-label="' + t("chat.permissionMode") + '"]');
+  await click(permSelect, "permission select not clickable");
+  await until(() => [...document.querySelectorAll('[role="option"]')].some((node) => node.textContent.includes(t("chat.remotePermissionOption.write"))), "permission options missing");
+  const writeOption = [...document.querySelectorAll('[role="option"]')].find((node) => node.textContent.includes(t("chat.remotePermissionOption.write")));
+  await click(writeOption, "write option missing");
+  check(!createBtn().disabled, "create must enable once runtime is picked");
+  await click(createBtn(), "create missing");
   check(created.length === 1, "expected exactly one create, got " + created.length);
   check(created[0].hostKey === "perch-a" && created[0].remoteProvider === "omp"
     && created[0].permissionMode === "write", "create payload lost the runtime or permission: " + JSON.stringify(created[0]));
 
-  // Second run: Codex carries its own option set (read-only … full-access).
+  // Second run: defaults path — Codex with its default (workspace-ask) without touching the selects.
   await click(button("Dev Box"), "host row missing on second run");
-  await until(() => button("codex"), "agent picker did not reopen");
-  await click(button("codex"), "codex option missing");
-  const fullAccess = await new Promise((resolve) => {
-    const tick = () => {
-      const hit = [...document.querySelectorAll("button")].find((node) => node.textContent.includes("Full access"));
-      hit ? resolve(hit) : setTimeout(tick, 40);
-    };
-    tick();
-  });
-  await click(fullAccess, "full-access option missing");
-  check(created.length === 2 && created[1].permissionMode === "full-access" && created[1].remoteProvider === "codex",
-    "codex permission payload wrong: " + JSON.stringify(created[1]));
+  await until(() => document.querySelector(".sidebar-remote-launch-config"), "config form did not reopen");
+  const agentSelect2 = document.querySelector('.sidebar-remote-launch-config [aria-label="' + t("remote:chooseAgent") + '"]');
+  await click(agentSelect2, "runtime select missing on second run");
+  await until(() => [...document.querySelectorAll('[role="option"]')].some((node) => node.textContent.trim() === "codex"), "codex option missing");
+  await click([...document.querySelectorAll('[role="option"]')].find((node) => node.textContent.trim() === "codex"), "codex option missing");
+  await click(createBtn(), "create missing on second run");
+  check(created.length === 2 && created[1].permissionMode === "workspace-ask" && created[1].remoteProvider === "codex",
+    "codex default permission payload wrong: " + JSON.stringify(created[1]));
   flushSync(() => view.unmount());
   return { passed: true };
 };
